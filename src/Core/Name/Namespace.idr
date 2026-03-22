@@ -19,7 +19,7 @@ import Libraries.Utils.Path
 ||| As a consequence we hide the representation behind an opaque type alias
 ||| and force users to manufacture and manipulate namespaces via the safe
 ||| functions we provide.
-export
+public export
 data Namespace : Type where
   MkNS : List String -> Namespace
 
