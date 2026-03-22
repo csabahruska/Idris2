@@ -75,15 +75,21 @@ Show UnifyMode where
   show InMatch = "InMatch"
   show InSearch = "InSearch"
 
+public export
+data AddCodeArg : Type where
+  MkAddCodeArg : {vars : _} -> (Term vars -> Term vars) -> AddCodeArg
+
 -- If we're unifying a Lazy type with a non-lazy type, we need to add an
 -- explicit force or delay to the first argument to unification. This says
 -- which to add, if any. Can only added at the very top level.
 public export
 data AddLazy = NoLazy | AddForce LazyReason | AddDelay LazyReason
+             | AddCode AddCodeArg
 
 export
 Show AddLazy where
   show NoLazy = "NoLazy"
+  show (AddCode _) = "AddCode"
   show (AddForce _) = "AddForce"
   show (AddDelay _) = "AddDelay"
 
@@ -1173,9 +1179,14 @@ mutual
                        (NDCon yfc y tagy ay ys)
   unifyNoEta mode loc env (NTCon xfc x ax xs) (NTCon yfc y ay ys)
    = do logC "unify" 20 $ do
-          x <- toFullNames x
-          y <- toFullNames y
-          pure $ "Comparing type constructors " ++ show x ++ " and " ++ show y
+          x_ <- toFullNames x
+          y_ <- toFullNames y
+          pure $ "Comparing type constructors x_: " ++ show x_ ++ " and y_: " ++ show y_ ++ " x: " ++ show x ++ " y: " ++ show y ++ " x: " ++ show @{Raw} x ++ " y: " ++ show @{Raw} y ++ " x_: " ++ show @{Raw} x_ ++ " y_" ++ show @{Raw} y_
+{-
+    LOG unify:20: Comparing type constructors x_: Staging.Code and y_: Staging.Code x: $resolved2654 y: Staging.Code x: Resolved 2654 y: NS Staging (UN (Basic Code)) x_: NS Staging (UN (Basic Code)) y_NS Staging (UN (Basic Code))
+
+-}
+
         if x == y
            then do let xs = map snd xs
                    let ys = map snd ys
@@ -1192,7 +1203,9 @@ mutual
              -- gallais: really? We don't mind being anticlassical do we?
 --                then postpone True loc mode env (quote empty env (NTCon x ax xs))
 --                                           (quote empty env (NTCon y ay ys))
-           else convertError loc env
+           else do
+            logC "unify" 20 $ pure "not - x == y"
+            convertError loc env
                      (NTCon xfc x ax xs)
                      (NTCon yfc y ay ys)
   unifyNoEta mode loc env (NDelayed xfc _ x) (NDelayed yfc _ y)
@@ -1239,6 +1252,16 @@ mutual
   isHoleApp : NF vars -> Bool
   isHoleApp (NApp _ (NMeta {}) _) = True
   isHoleApp _ = False
+
+  getRef : {auto c : Ref Ctxt Defs} -> (vars : _) -> FC -> Name -> Core (Term vars)
+  getRef vars fc n' = do
+    defs <- get Ctxt
+    n <- toResolvedNames n'
+    Just d <- lookupDefExact n (gamma defs)
+      | _ => assert_total $ idris_crash "??"
+    let Just nt = defNameType d
+      | _ => assert_total $ idris_crash "???"
+    pure $ Ref fc nt n
 
   export
   Unify NF where
@@ -1290,8 +1313,262 @@ mutual
     unifyWithLazyD _ _ mode loc env tmx (NDelayed _ r tmy)
        = do vs <- unify (lower mode) loc env tmx tmy
             pure ({ addLazy := AddDelay r } vs)
+
+    --------------------------
+{-
+    unifyWithLazyD _ _ mode loc env tmx@(NTCon xfc n _ _{-[(_, p), (_, c)]-}) tmy@(NBind yfc t (Pi _ _ _ s) _) = do
+      x@(NS (MkNS ["Staging"]) (UN (Basic "Code"))) <- toFullNames n
+        | _ => unify mode loc env tmx tmy
+      logC "staging" 20 $ pure $ "TODO PApp - t: " ++ show t
+      --logNF "staging" 20 "p" env p
+      --logNF "staging" 20 "c" env c
+      pure success
+-}
+{-
+       NBind    : FC -> (x : Name) -> Binder (Closure vars) ->
+                  (Defs -> Closure vars -> Core (NF vars)) -> NF vars
+
+     Pi : FC -> RigCount -> PiInfo type -> (ty : type) -> Binder type
+-}
+    {-
+    (VCode p c, VPi t s) -> do
+      unify p =<< mComputation
+      mp <- newMeta
+      m1 <- newMeta
+      m2 <- newMeta
+      f <- mlift (coerce True) (mCode mComputation (pure c)) (mCode mComputation (mArr (mVar mp) (mVar m1) (mVar m2)))
+      q <- coerce True t =<< mCode mValue (mVar m1)
+      newBVar "r" { -t- } \v -> do
+        h <- mlift (coerce True) (mCode (mVar mp) (mVar m2)) (mApp (pure s) (mVar v))
+        pure \x -> tLam v $ h $ TApps (TVar "PApp") [TVar mp, TVar m1, TVar m2, f x, q $ TVar v]
+    -}
+    -- TODO: add coercion here
+{-
+metaVar : {vars : _} ->
+          {auto c : Ref Ctxt Defs} ->
+          {auto u : Ref UST UState} ->
+          FC -> RigCount ->
+          Env Term vars -> Name -> Term vars -> Core (Term vars)
+metaVar fc rig env n ty
+    = do (_, tm) <- newMeta fc rig env n ty (Hole (length env) (holeInit False)) True
+         pure tm
+
+uniVar : {auto c : Ref Ctxt Defs} ->
+         {auto u : Ref UST UState} ->
+         FC -> Core Name
+uniVar fc
+    = do n <- genName "u"
+         idx <- addDef n (newDef fc n erased Scope.empty (Erased fc Placeholder) (specified Public) None)
+         pure (Resolved idx)
+
+  where
+    mkExpected : Maybe (Glued vars) -> Core (Glued vars)
+    mkExpected (Just ty) = pure ty
+    mkExpected Nothing
+        = do nm <- genName "delayTy"
+             u <- uniVar fc
+             ty <- metaVar fc erased env nm (TType fc u)
+             pure (gnf env ty)
+-}
+{-
+RigCount = ZeroOneOmega
+data ZeroOneOmega = Rig0 | Rig1 | RigW
+newMeta : {vars : _} ->
+          {auto c : Ref Ctxt Defs} ->
+          {auto u : Ref UST UState} ->
+          FC -> RigCount ->
+          Env Term vars -> Name -> Term vars -> Def ->
+          Bool ->
+          Core (Int, Term vars)
+newMeta fc r env n ty def cyc = newMetaLets fc r env n ty def cyc False
+
+                           hn <- uniqueBasicName defs (toList $ map nameRoot vars) base
+                           (idx, tm) <- newMeta fc rig env (UN $ Basic hn) ty
+                                                (Hole (length env) (holeInit False))
+                                                False
+nf : {auto c : Ref Ctxt Defs} ->
+     {vars : _} ->
+     Defs -> Env Term vars -> Term vars -> Core (NF vars)
+
+     Ref : FC -> NameType -> (name : Name) -> Term vars
+
+data NameType : Type where
+     Bound   : NameType
+     Func    : NameType
+     DataCon : (tag : Int) -> (arity : Nat) -> NameType
+     TyCon   : (arity : Nat) -> NameType
+-}
+
+{-
+    (VVar "Polarity", VType) -> pure \x -> TVar "Ty" `TApp` x
+-}
+    unifyWithLazyD _ _ mode loc env tmx@(NTCon xfc n _ []) tmy@(NType{}) = do
+      x@(NS (MkNS ["Staging"]) (UN (Basic "Polarity"))) <- toFullNames n
+        | _ => unify mode loc env tmx tmy
+      ty <- getRef vars xfc $ NS (MkNS ["Staging"]) $ UN $ Basic "Ty"
+      logTerm "staging" 20 "ty " ty
+      pure ({ addLazy := AddCode $ MkAddCodeArg $ \tm => App xfc ty tm } success)
+
+
+    unifyWithLazyD _ _ mode loc env tmx@(NTCon xfc n _ [(_, p)]) tmy@(NType{}) = do
+      x@(NS (MkNS ["Staging"]) (UN (Basic "Ty"))) <- toFullNames n
+        | _ => unify mode loc env tmx tmy
+
+{- mikrocsip coercion:
+    (VVar "Ty" `VApp` p, VType) -> do
+      mp <- newMeta     -- may be unnecessary
+      unify p $ VVar mp -- may be unnecessary
+      pure \x -> TVar "Code" `TApp` TVar mp `TApp` x
+-}
+
+      logC "staging" 10 $ do
+          pure "tmx - raw: \{show @{Raw} n} show:\{show n} full-name: \{show x} full-name-raw: \{show @{Raw} x}"
+      logC "staging" 10 $ do
+          pure "tmx: \{show !(toFullNames tmx)}"
+      -- done: get Code
+
+      --defNameType : Def -> Maybe NameType
+      --lookupDefTyExact : Name -> Context -> Core (Maybe (Def, ClosedTerm))
+      --lookupDefExact : Name -> Context -> Core (Maybe Def)
+
+      {-
+     Local : FC -> (isLet : Maybe Bool) ->
+             (idx : Nat) -> (0 p : IsVar name idx vars) -> Term vars
+
+public export
+data IsDefined : Name -> Scope -> Type where
+  MkIsDefined : {idx : Nat} -> RigCount -> (0 p : IsVar n idx vars) ->
+                IsDefined n vars
+
+    = case defined x env of
+           Just (MkIsDefined rigb lv) =>
+
+export
+defined : {vars : _} ->
+          (n : Name) -> Env Term vars ->
+          Maybe (IsDefined n vars)
+      -}
+      --hn <- genName "u"
+      -- option a)
+      --let ty = Ref xfc (TyCon 0) (NS (MkNS ["Staging"]) $ UN $ Basic "Polarity")
+      --(idx, mp) <- newMeta xfc top env hn ty (Hole (length env) (holeInit False)) False
+      -- option b)
+      --Just ty <- lookupTyExact (NS (MkNS ["Staging"]) $ UN $ Basic "Polarity") (gamma defs)
+      --  | _ => assert_total $ idris_crash "??"
+      --(idx, mp) <- newMeta xfc top env hn (embed ty) (Hole (length env) (holeInit False)) False
+      --vs <- unify mode loc env !(evalClosure defs p) !(nf defs env mp)
+
+      {-
+                                      --let code = Ref fc (TyCon 2) (NS (MkNS ["Staging"]) $ UN $ Basic "Code")
+                                          --value_ = Ref fc (TyCon 0) (NS (MkNS ["Staging"]) $ UN $ Basic "Value")
+                                          --int_ = Ref fc (TyCon 0) (NS (MkNS ["Staging"]) $ UN $ Basic "Int_")
+                                          --mp = int_ --believe_me c_p -- TODO
+                                      --LOG elab:5: Solved: (Staging.Code Staging.Value Staging.Int_)
+                                      --pure (App fc (App fc code value_) int_, exp) -- works
+                                      --pure (App fc (App fc code value_) tm, exp) -- works
+                                      --pure (App fc (App fc code c_p) tm, exp)
+      -}
+      defs <- get Ctxt
+      p_tm <- quote defs env p
+      -- working version a)
+      --pure ({ addLazy := AddCode $ MkAddCodeArg $ \tm => App xfc (embed code_3) $ p_tm) tm } success)
+      --pure ({ addLazy := AddCode $ MkAddCodeArg $ \tm => App xfc (App xfc code_3 p_tm) tm } success)
+
+      -- working version b)
+      --let code = Ref xfc (TyCon 2) (NS (MkNS ["Staging"]) $ UN $ Basic "Code")
+      code <- getRef vars xfc $ NS (MkNS ["Staging"]) $ UN $ Basic "Code"
+      logTerm "staging" 20 "code " code
+      pure ({ addLazy := AddCode $ MkAddCodeArg $ \tm => App xfc (App xfc code p_tm) tm } success)
+{-
+    unifyWithLazyD _ _ mode loc env tmx@(NTCon xfc n _ [_, _]) tmy@(NBind yfc t (Pi _ _ _ s) _) = do
+      x@(NS (MkNS ["Staging"]) (UN (Basic "Code"))) <- toFullNames n
+        | _ => unify mode loc env tmx tmy
+      logC "staging" 20 $ pure $ "TODO 1 - t: " ++ show t
+      pure success
+
+    unifyWithLazyD _ _ mode loc env tmx@(NBind yfc t (Pi _ _ _ s) _) tmy@(NTCon xfc n _ [_, _]) = do
+      x@(NS (MkNS ["Staging"]) (UN (Basic "Code"))) <- toFullNames n
+        | _ => unify mode loc env tmx tmy
+      logC "staging" 20 $ pure $ "TODO 2 - t: " ++ show t
+      pure success
+
+    unifyWithLazyD _ _ mode loc env tmx@(NTCon xfc n _ _{-[(_, p), (_, c)]-}) tmy = do
+      x@(NS (MkNS ["Staging"]) (UN (Basic "Code"))) <- toFullNames n
+        | _ => unify mode loc env tmx tmy
+      logC "staging" 20 $ pure $ "PApp - TODO 3"
+      logNF "staging" 20 "tmy" env tmy
+      --logNF "staging" 20 "c" env c
+      pure success
+
+    unifyWithLazyD _ _ mode loc env tmx tmy@(NTCon xfc n _ _{-[(_, p), (_, c)]-}) = do
+      x@(NS (MkNS ["Staging"]) (UN (Basic "Code"))) <- toFullNames n
+        | _ => unify mode loc env tmx tmy
+      logC "staging" 20 $ pure $ "PApp - TODO 4"
+      logNF "staging" 20 "tmx" env tmx
+      --logNF "staging" 20 "c" env c
+      pure success
+-}
     unifyWithLazyD _ _ mode loc env tmx tmy
-       = unify mode loc env tmx tmy
+      = unify mode loc env tmx tmy
+    {-
+             0 => pure erased
+             1 => pure linear
+             2 => pure top
+unify : Unify tm =>
+        {vars : _} ->
+        {auto c : Ref Ctxt Defs} ->
+        {auto u : Ref UST UState} ->
+        UnifyInfo ->
+        FC -> Env Term vars ->
+        tm vars -> tm vars ->
+        Core UnifyResult
+
+    full-name-raw: NS "Staging" (UN (Basic "Ty"))
+       NType    : FC -> Name -> NF vars
+
+       NTCon    : FC -> Name -> (arity : Nat) ->
+                  List (FC, Closure vars) -> NF vars
+    showCon d "MkKindedName" $ showArg nm ++ showArg @{Raw} fn ++ showArg @{Raw} rn
+
+lookupDefExact : Name -> Context -> Core (Maybe Def)
+
+getCons : Defs -> NF vars -> Core (List DataCon)
+getCons defs (NTCon _ tn _ _)
+    = case !(lookupDefExact tn (gamma defs)) of
+           Just (TCon _ _ _ _ _ cons _) =>
+
+Reflect Bool where
+  reflect fc defs lhs env True = getCon fc defs (basics "True")
+  reflect fc defs lhs env False = getCon fc defs (basics "False")
+
+toFullNames : {auto c : Ref Ctxt Defs} ->
+              HasNames a => a -> Core a
+toFullNames t
+    = do defs <- get Ctxt
+         full (gamma defs) t
+
+toResolvedNames : {auto c : Ref Ctxt Defs} ->
+                  HasNames a => a -> Core a
+toResolvedNames t
+    = do defs <- get Ctxt
+         resolved (gamma defs) t
+
+interface HasNames a where
+  full : Context -> a -> Core a
+  resolved : Context -> a -> Core a
+
+log : {auto c : Ref Ctxt Defs} ->
+      LogTopic -> Nat -> Lazy String -> Core ()
+log s n msg
+    = when !(logging s n)
+        $ logString s.topic n msg
+
+  unifyNoEta mode loc env (NTCon xfc x ax xs) (NTCon yfc y ay ys)
+   = do logC "unify" 20 $ do
+          x <- toFullNames x
+          y <- toFullNames y
+          pure $ "Comparing type constructors " ++ show x ++ " and " ++ show y
+    -}
 
   export
   Unify Term where
@@ -1475,6 +1752,9 @@ retryGuess mode smode (hid, (loc, hname))
                     case constraints cs of
                          [] => do tm' <- case addLazy cs of
                                            NoLazy => pure tm
+                                           AddCode _ => do
+                                            logC "staging" 20 $ do pure "AddCode - TODO1"
+                                            pure tm -- TODO
                                            AddForce r => pure $ forceMeta r envb tm
                                            AddDelay r =>
                                               do ty <- getType Env.empty tm
@@ -1488,6 +1768,9 @@ retryGuess mode smode (hid, (loc, hname))
                                   pure (holesSolved cs)
                          newcs => do tm' <- case addLazy cs of
                                            NoLazy => pure tm
+                                           AddCode _ => do
+                                            logC "staging" 20 $ do pure "AddCode - TODO2"
+                                            pure tm -- TODO
                                            AddForce r => pure $ forceMeta r envb tm
                                            AddDelay r =>
                                               do ty <- getType Env.empty tm
