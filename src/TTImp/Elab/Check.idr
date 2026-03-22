@@ -798,6 +798,16 @@ checkExp rig elabinfo env fc tm got (Just exp)
               [] => case addLazy vs of
                          NoLazy => do logTerm "elab" 5 "Solved" tm
                                       pure (tm, got)
+                         AddCode (MkAddCodeArg {vars=c_vars} f) => do
+                                      let Just Refl = scopeEq vars c_vars
+                                            | Nothing => throw (InternalError "WAT - staging")
+                                      let tm' = f tm
+                                      logTerm "staging" 5 "Code-in " tm
+                                      logTerm "staging" 5 "Code-out" tm'
+                                      logGlue "staging" 5 "Got" got
+                                      logGlue "staging" 5 "Exp" exp
+                                      pure (tm', exp)
+
                          AddForce r => do logTerm "elab" 5 "Force" tm
                                           logGlue "elab" 5 "Got" got
                                           logGlue "elab" 5 "Exp" exp
@@ -813,6 +823,15 @@ checkExp rig elabinfo env fc tm got (Just exp)
                        dumpConstraints "elab" 5 False
                        case addLazy vs of
                             NoLazy => pure (ctm, got)
+                            AddCode (MkAddCodeArg {vars=c_vars} f) => do
+                                      let Just Refl = scopeEq vars c_vars
+                                            | Nothing => throw (InternalError "WAT2 - staging")
+                                      let tm' = f tm
+                                      logTerm "staging" 5 "Code-in " tm
+                                      logTerm "staging" 5 "Code-out" tm'
+                                      logGlue "staging" 5 "Got" got
+                                      logGlue "staging" 5 "Exp" exp
+                                      pure (tm', exp)
                             AddForce r => pure (TForce fc r tm, exp)
                             AddDelay r => do ty <- getTerm got
                                              pure (TDelay fc r ty tm, exp)
