@@ -64,10 +64,9 @@ pow_ : Nat -> Int_ -> Int_
 pow_ Z     _ = One
 pow_ (S Z) c = c
 pow_ n c with (half n)
-  pow_ n c | (Just k) = PApp sqr (pow_ k c)
-  --pow_ n c | (Just k) = sqr (pow_ k c)
-  pow_ (S n) c | _ = Mul c (pow_ n c)
-  pow_ _ _ | _ = assert_total $ idris_crash "pow_"
+  pow_ n c     | (Just k) = sqr (pow_ k c)
+  pow_ (S n) c | _        = Mul c (pow_ n c)
+  pow_ _ _     | _        = assert_total $ idris_crash "pow_"
 
 main_ : Arr Int_ Int_
 main_ = \c => pow_ 5 c
