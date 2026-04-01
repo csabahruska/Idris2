@@ -58,15 +58,7 @@ half (S (S n)) with (half n)
 half _ = Nothing
 
 sqr : Arr Int_ Int_
-sqr = PLam $ \c => Mul c c
-
-%logging 1000
---sqr2 : Arr Int_ Int_
---sqr2 = \c => Mul c c
-
---pow4_ : Int_
---pow4_ = sqr2 One
-%logging  0
+sqr = \c => Mul c c
 
 pow_ : Nat -> Int_ -> Int_
 pow_ Z     _ = One
@@ -78,7 +70,7 @@ pow_ n c with (half n)
   pow_ _ _ | _ = assert_total $ idris_crash "pow_"
 
 main_ : Arr Int_ Int_
-main_ = PLam $ \c => pow_ 5 c
+main_ = \c => pow_ 5 c
 
 -- example2
 
@@ -86,6 +78,6 @@ main_ = PLam $ \c => pow_ 5 c
 sqr2 : Arr Int_ Int_
 sqr2 = \c => Mul c c
 
-sqr3 : Int_
-sqr3 = sqr One
+--sqr3 : Int_
+--sqr3 = sqr2 One
 %logging "staging" 0

@@ -777,7 +777,7 @@ convert : {vars : _} ->
           {auto u : Ref UST UState} ->
           FC -> ElabInfo -> Env Term vars -> Glued vars -> Glued vars ->
           Core UnifyResult
-convert = convertWithLazy False
+convert = convertWithLazy True
 
 -- Check whether the type we got for the given type matches the expected
 -- type.
@@ -801,11 +801,11 @@ checkExp rig elabinfo env fc tm got (Just exp)
                          AddCode (MkAddCodeArg {vars=c_vars} f) => do
                                       let Just Refl = scopeEq vars c_vars
                                             | Nothing => throw (InternalError "WAT - staging")
-                                      let tm' = f tm
-                                      logTerm "staging" 5 "Code-in " tm
-                                      logTerm "staging" 5 "Code-out" tm'
+                                      tm' <- f tm
                                       logGlue "staging" 5 "Got" got
                                       logGlue "staging" 5 "Exp" exp
+                                      logTerm "staging" 5 "Code-in " tm
+                                      logTerm "staging" 5 "Code-out" tm'
                                       pure (tm', exp)
 
                          AddForce r => do logTerm "elab" 5 "Force" tm
@@ -826,11 +826,11 @@ checkExp rig elabinfo env fc tm got (Just exp)
                             AddCode (MkAddCodeArg {vars=c_vars} f) => do
                                       let Just Refl = scopeEq vars c_vars
                                             | Nothing => throw (InternalError "WAT2 - staging")
-                                      let tm' = f tm
-                                      logTerm "staging" 5 "Code-in " tm
-                                      logTerm "staging" 5 "Code-out" tm'
+                                      tm' <- f tm
                                       logGlue "staging" 5 "Got" got
                                       logGlue "staging" 5 "Exp" exp
+                                      logTerm "staging" 5 "Code-in " tm
+                                      logTerm "staging" 5 "Code-out" tm'
                                       pure (tm', exp)
                             AddForce r => pure (TForce fc r tm, exp)
                             AddDelay r => do ty <- getTerm got

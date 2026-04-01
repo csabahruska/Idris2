@@ -77,7 +77,7 @@ Show UnifyMode where
 
 public export
 data AddCodeArg : Type where
-  MkAddCodeArg : {vars : _} -> (Term vars -> Term vars) -> AddCodeArg
+  MkAddCodeArg : {vars : _} -> (Term vars -> Core (Term vars)) -> AddCodeArg
 
 -- If we're unifying a Lazy type with a non-lazy type, we need to add an
 -- explicit force or delay to the first argument to unification. This says
@@ -1258,10 +1258,40 @@ mutual
     defs <- get Ctxt
     n <- toResolvedNames n'
     Just d <- lookupDefExact n (gamma defs)
-      | _ => assert_total $ idris_crash "??"
+      | _ => assert_total $ idris_crash "getRef ?? \{show n'}"
     let Just nt = defNameType d
-      | _ => assert_total $ idris_crash "???"
+      | _ => assert_total $ idris_crash "getRef ??? \{show n'}"
     pure $ Ref fc nt n
+
+  metaVar : {vars : _} ->
+          {auto c : Ref Ctxt Defs} ->
+          {auto u : Ref UST UState} ->
+          FC -> RigCount ->
+          Env Term vars -> Name -> Term vars -> Core (Term vars)
+  metaVar fc rig env n ty
+    = do (_, tm) <- newMeta fc rig env n ty (Hole (length env) (holeInit False)) True
+         pure tm
+
+  coeTrM : {vars1 : _} ->
+          {auto c : Ref Ctxt Defs} ->
+          {auto u : Ref UST UState} ->
+          String -> UnifyResult -> Term vars1 -> Core (Term vars1)
+  coeTrM msg vs tm = logC "staging" 5 (pure msg) >> case (constraints vs) of
+    [] => case addLazy vs of
+               NoLazy => do
+                logTerm "staging" 20 "coercion \{msg} - identity:" !(toFullNames tm)
+                pure tm
+               AddCode (MkAddCodeArg {vars=c_vars} f) => case scopeEq vars1 c_vars of
+                  Just Refl => do
+                    logTerm "staging" 20 "coercion \{msg} before:" !(toFullNames tm)
+                    tm' <- f tm
+                    logTerm "staging" 20 "coercion \{msg}  after:" !(toFullNames tm')
+                    pure tm'
+                  Nothing => assert_total $ idris_crash "WAT - staging - coeTr"
+
+               AddForce r => assert_total $ idris_crash "WAT - staging - coeTr - AddForce"
+               AddDelay r => assert_total $ idris_crash "WAT - staging - coeTr - AddDelay"
+    _ => assert_total $ idris_crash "WAT - staging - coeTr - constraints"
 
   export
   Unify NF where
@@ -1316,13 +1346,140 @@ mutual
 
     --------------------------
 {-
-    unifyWithLazyD _ _ mode loc env tmx@(NTCon xfc n _ _{-[(_, p), (_, c)]-}) tmy@(NBind yfc t (Pi _ _ _ s) _) = do
+LOG elab.unify:5: Unifying True InExpr: (c : (Staging.Code Staging.Value Staging.Int_)) -> (Staging.Code Staging.Value Staging.Int_)
+LOG elab.unify:5: ....with: (Staging.Code Staging.Computation (Staging.Arr Staging.Value Staging.Int_ Staging.Int_))
+
+-}
+{-
+    (VCode p c, VPi t s) -> do
+      unify p =<< mComputation
+      mp <- newMeta
+      m1 <- newMeta
+      m2 <- newMeta
+      f <- mlift (coerce True) (mCode mComputation (pure c)) (mCode mComputation (mArr (mVar mp) (mVar m1) (mVar m2)))
+      q <- coerce True t =<< mCode mValue (mVar m1)
+      newBVar "r" { -t- } \v -> do
+        h <- mlift (coerce True) (mCode (mVar mp) (mVar m2)) (mApp (pure s) (mVar v))
+        pure \x -> tLam v $ h $ TApps (TVar "PApp") [TVar mp, TVar m1, TVar m2, f x, q $ TVar v]
+-}
+    unifyWithLazyD _ _ mode loc env tmx@(NTCon xfc n _ [(_, p), (_, c)]) tmy@(NBind yfc t (Pi _ _ _ s) _) = do
       x@(NS (MkNS ["Staging"]) (UN (Basic "Code"))) <- toFullNames n
         | _ => unify mode loc env tmx tmy
-      logC "staging" 20 $ pure $ "TODO PApp - t: " ++ show t
+      logC "staging" 20 $ pure $ "TODO Code - Pi - t: " ++ show t
       --logNF "staging" 20 "p" env p
       --logNF "staging" 20 "c" env c
-      pure success
+      unify mode loc env tmx tmy -- TODO
+
+{-
+    (VPi t s, VCode p c) -> do
+      unify p =<< mComputation
+      mp <- newMeta
+      m1 <- newMeta
+      m2 <- newMeta
+      f <- mlift (coerce True) (mCode mComputation (mArr (mVar mp) (mVar m1) (mVar m2))) (mCode mComputation (pure c))
+      q <- mlift (coerce True) (mCode mValue (mVar m1)) (pure t)
+      newBVar "r" { - mCode mValue (mVar m1) - } \v -> do
+        h <- mlift (coerce True) (mApp (pure s) (eval $ q $ TVar v)) (mCode (mVar mp) (mVar m2))
+        pure \x -> f $ TApps (TVar "PLam") [TVar mp, TVar m1, TVar m2, tLam v $ h $ TApp x $ q $ TVar v]
+-}
+    unifyWithLazyD ref0 ref1 mode loc env tmx@(NBind yfc t_name (Pi _ _ _ t_val) _) tmy@(NTCon xfc n _ [(_, p), (_, c)]) = do
+      x@(NS (MkNS ["Staging"]) (UN (Basic "Code"))) <- toFullNames n
+        | _ => unify mode loc env tmx tmy
+      logC "staging" 20 $ pure $ "TODO Pi - Code - t_name: " ++ show t_name
+      defs <- get Ctxt
+      logC "staging" 20 $ pure "TODO Pi - Code - tmx: \{show !(toFullNames !(quote defs env tmx))}"
+      logC "staging" 20 $ pure "TODO Pi - Code - t_val: \{show !(toFullNames !(quote defs env t_val))}"
+      {-
+          type of:
+            + mp : Polarity
+            + m1 : Ty Value
+            + m2 : Ty mp
+        TODO:
+          - what is newBVar?
+          - what is it in idris?
+      -}
+      computation <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Computation"
+      logC "staging" 20 $ pure "TODO Pi - Code - 1"
+      defs <- get Ctxt
+      _ <- unify mode loc env !(quote defs env p) computation
+      logC "staging" 20 $ pure "TODO Pi - Code - 2"
+
+      polarity <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Polarity"
+      value <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Value"
+      ty <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Ty"
+      logC "staging" 20 $ pure "TODO Pi - Code - 3"
+
+      mp <- metaVar emptyFC top env !(genName "mp") polarity
+      m1 <- metaVar emptyFC top env !(genName "m1") (App emptyFC ty value)
+      m2 <- metaVar emptyFC top env !(genName "m2") (App emptyFC ty mp)
+      logC "staging" 20 $ pure "TODO Pi - Code - 4"
+
+      code <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Code"
+      arr <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Arr"
+      plam <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "PLam"
+      logC "staging" 20 $ pure "TODO Pi - Code - 5"
+
+      f <- unifyWithLazyD ref0 ref1 mode loc env (apply xfc code [computation, apply xfc arr [mp, m1, m2]]) (apply xfc code [computation, !(quote defs env c)])
+      logC "staging" 20 $ pure "TODO Pi - Code - 6"
+
+      --t <- getRef vars xfc t_name
+      --let t = Ref xfc Bound t_name
+      Bind tfc t_name t_binder@(Pi _ _ _ t) s <- quote defs env tmx
+        | _ => assert_total $ idris_crash "Pi - Code - err1"
+      logC "staging" 20 $ pure "TODO Pi - Code - 7"
+      q <- unifyWithLazyD ref0 ref1 mode loc env (apply xfc code [value, m1]) t
+      logC "staging" 20 $ pure "TODO Pi - Code - 8"
+      v_r <- genVarName "r"
+      let lam_binder = Lam xfc top Explicit $ apply xfc code [value, m1]
+          v_tm = Ref xfc Bound v_r -- TODO: this is not a Ref
+      {-
+            -- Replace any reference to 'x' with a locally bound name 'new'
+            refToLocal : (x : Name) -> (new : Name) -> Term vars -> Term (new :: vars)
+
+           Bind : FC -> (x : Name) -> (b : Binder (Term vars)) -> (scope : Term (Scope.bind vars x)) -> Term vars
+           Let : FC -> RigCount -> (val : type) -> (ty : type) -> Binder type
+      -}
+      --h <- unifyWithLazyD ref0 ref1 mode loc env' (App xfc (believe_me s) $ coeTr q v_tm) (weaken $ apply xfc code [mp, m2])
+
+      let got01 = Bind xfc t_name (Let xfc top (!(coeTrM "q1" q v_tm)) t) s -- Q: what binds v_tm?
+      h <- unifyWithLazyD ref0 ref1 mode loc env got01 (apply xfc code [mp, m2])
+
+      --Lam : FC -> RigCount -> PiInfo type -> (ty : type) -> Binder type
+
+      pure ({ addLazy := AddCode $ MkAddCodeArg $
+        \x => do
+          tmp <- coeTrM "h" h $ {-weaken $ -}App xfc x (!(coeTrM "q2" q v_tm))
+          tm' <- coeTrM "f" f $ apply xfc plam [mp, m1, m2, Bind xfc v_r lam_binder $ refToLocal v_r v_r tmp]
+          toResolvedNames tm'
+        } success)
+      --unify mode loc env tmx tmy -- TODO
+{-
+    (VPi t s, VCode p c) -> do
+      unify p =<< mComputation
+      mp <- newMeta
+      m1 <- newMeta
+      m2 <- newMeta
+      f <- mlift (coerce True) (mCode mComputation (mArr (mVar mp) (mVar m1) (mVar m2))) (mCode mComputation (pure c))
+      q <- mlift (coerce True) (mCode mValue (mVar m1)) (pure t)
+      newBVar "r" { - mCode mValue (mVar m1) - } \v -> do
+        h <- mlift (coerce True) (mApp (pure s) (eval $ q $ TVar v)) (mCode (mVar mp) (mVar m2))
+        pure \x -> f $ TApps (TVar "PLam") [TVar mp, TVar m1, TVar m2, tLam v $ h $ TApp x $ q $ TVar v]
+-}
+
+{-
+     App : FC -> (fn : Term vars) -> (arg : Term vars) -> Term vars
+data Env : (tm : Scoped) -> Scope -> Type where
+     Nil : Env tm Scope.empty
+     (::) : Binder (tm vars) -> Env tm vars -> Env tm (x :: vars)
+
+  apply : FC -> Term vars -> List (Term vars) -> Term vars
+  unifyWithLazyD : {vars : _} ->
+                   Ref Ctxt Defs ->
+                   Ref UST UState ->
+                   UnifyInfo ->
+                   FC -> Env Term vars ->
+                   tm vars -> tm vars ->
+                   Core UnifyResult
 -}
 {-
        NBind    : FC -> (x : Name) -> Binder (Closure vars) ->
@@ -1405,9 +1562,9 @@ data NameType : Type where
     unifyWithLazyD _ _ mode loc env tmx@(NTCon xfc n _ []) tmy@(NType{}) = do
       x@(NS (MkNS ["Staging"]) (UN (Basic "Polarity"))) <- toFullNames n
         | _ => unify mode loc env tmx tmy
-      ty <- getRef vars xfc $ NS (MkNS ["Staging"]) $ UN $ Basic "Ty"
+      ty <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Ty"
       logTerm "staging" 20 "ty " ty
-      pure ({ addLazy := AddCode $ MkAddCodeArg $ \tm => App xfc ty tm } success)
+      pure ({ addLazy := AddCode $ MkAddCodeArg $ \tm => pure $ App xfc ty tm } success)
 
 
     unifyWithLazyD _ _ mode loc env tmx@(NTCon xfc n _ [(_, p)]) tmy@(NType{}) = do
@@ -1476,9 +1633,9 @@ defined : {vars : _} ->
 
       -- working version b)
       --let code = Ref xfc (TyCon 2) (NS (MkNS ["Staging"]) $ UN $ Basic "Code")
-      code <- getRef vars xfc $ NS (MkNS ["Staging"]) $ UN $ Basic "Code"
+      code <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Code"
       logTerm "staging" 20 "code " code
-      pure ({ addLazy := AddCode $ MkAddCodeArg $ \tm => App xfc (App xfc code p_tm) tm } success)
+      pure ({ addLazy := AddCode $ MkAddCodeArg $ \tm => pure $ App xfc (App emptyFC code p_tm) tm } success)
 {-
     unifyWithLazyD _ _ mode loc env tmx@(NTCon xfc n _ [_, _]) tmy@(NBind yfc t (Pi _ _ _ s) _) = do
       x@(NS (MkNS ["Staging"]) (UN (Basic "Code"))) <- toFullNames n
