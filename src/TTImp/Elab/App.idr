@@ -518,6 +518,8 @@ mutual
                       then do res <- convert fc elabinfo env
                                                  (gnf env metaval)
                                                  (gnf env argv)
+                              -- TODO: coeTR handle coercion transformers
+                              log "staging" 5 "checkRtoL - TODO coeTR"
                               let [] = constraints res
                                   | cs => do tmty <- getTerm gty
                                              newConstant fc rig env tm tmty cs
@@ -748,12 +750,22 @@ mutual
            logGlue "elab.with" 10 "Expected function type" expfnty
            whenJust expty (logGlue "elab.with" 10 "Expected result type")
            res <- checkAppWith' rig elabinfo nest env fc fntm fnty (n, 1 + argpos) expargs autoargs namedargs kr expty
+           logTerm "elab.with" 10 "Function - res " (fst res)
            cres <- Check.convert fc elabinfo env (glueBack defs env ty) expfnty
+           -- TODO: coeTR handle coercion transformer
            let [] = constraints cres
               | cs => do cty <- getTerm expfnty
                          ctm <- newConstant fc rig env (fst res) cty cs
-                         pure (ctm, gnf env retTy)
-           pure res
+                         log "staging" 5 "checkAppWith' - TODO coeTR - 1"
+                         let App fc tm argv = ctm
+                              | _ => assert_total $ idris_crash "checkAppWith' - err1"
+                         tm' <- coeTrM "checkAppWith' - 1" cres tm
+                         pure (App fc tm' argv, gnf env retTy)
+           log "staging" 5 "checkAppWith' - TODO coeTR - 2"
+           let App fc tm argv = fst res
+                | _ => assert_total $ idris_crash "checkAppWith' - err1"
+           tm' <- coeTrM "checkAppWith' - 2" cres tm
+           pure (App fc tm' argv, snd res)
   -- Only non-user implicit `as` bindings are allowed to be present as arguments at this stage
   checkAppWith' rig elabinfo nest env fc tm ty argdata [] autoargs namedargs kr expty
       = do defs <- get Ctxt

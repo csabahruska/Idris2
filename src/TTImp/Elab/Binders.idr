@@ -174,6 +174,8 @@ checkLambda rig_in elabinfo nest env fc rigl info n argTy scope (Just expty_in)
                     let rigb = rigl `glb` c
                     let env' : Env Term (n :: _) = Lam fc rigb info' tyv :: env
                     ignore $ convert fc elabinfo env (gnf env tyv) (gnf env pty)
+                    -- TODO: coeTR handle coercion transformers
+                    log "staging" 5 "checkLambda - TODO coeTR"
                     let nest' = weaken (dropName n nest)
                     pscnf <- normaliseHoles defs env' $ compat psc
                     (scopev, scopet) <-

@@ -74,10 +74,15 @@ main_ = \c => pow_ 5 c
 
 -- example2
 
-%logging "staging" 1000
 sqr2 : Arr Int_ Int_
 sqr2 = \c => Mul c c
 
---sqr3 : Int_
---sqr3 = sqr2 One
+%logging "staging" 1000
+%logging "elab.with" 1000
+sqr3 : Int_
+sqr3 = sqr2 One
+%logging "elab.with" 0
 %logging "staging" 0
+
+sqr4 : Int_
+sqr4 = PApp sqr2 One

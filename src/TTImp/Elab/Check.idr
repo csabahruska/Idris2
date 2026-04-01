@@ -741,6 +741,7 @@ convertWithLazy withLazy fc elabinfo env x y
                        _ => inTerm in
           catch
             (do let lazy = !isLazyActive && withLazy
+                log "staging" 5 "convertWithLazy"
                 logGlueNF "elab.unify" 5 ("Unifying " ++ show withLazy ++ " "
                              ++ show (elabMode elabinfo)) env x
                 logGlueNF "elab.unify" 5 "....with" env y
@@ -777,7 +778,9 @@ convert : {vars : _} ->
           {auto u : Ref UST UState} ->
           FC -> ElabInfo -> Env Term vars -> Glued vars -> Glued vars ->
           Core UnifyResult
-convert = convertWithLazy True
+convert fc elabinfo env x y = do
+  log "staging" 5 "convert"
+  convertWithLazy True fc elabinfo env x y
 
 -- Check whether the type we got for the given type matches the expected
 -- type.
@@ -793,7 +796,8 @@ checkExp : {vars : _} ->
            (got : Glued vars) -> (expected : Maybe (Glued vars)) ->
            Core (Term vars, Glued vars)
 checkExp rig elabinfo env fc tm got (Just exp)
-    = do vs <- convertWithLazy True fc elabinfo env got exp
+    = do log "staging" 5 "checkExp"
+         vs <- convertWithLazy True fc elabinfo env got exp
          case (constraints vs) of
               [] => case addLazy vs of
                          NoLazy => do logTerm "elab" 5 "Solved" tm

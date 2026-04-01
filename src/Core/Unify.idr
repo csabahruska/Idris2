@@ -1272,6 +1272,7 @@ mutual
     = do (_, tm) <- newMeta fc rig env n ty (Hole (length env) (holeInit False)) True
          pure tm
 
+  export
   coeTrM : {vars1 : _} ->
           {auto c : Ref Ctxt Defs} ->
           {auto u : Ref UST UState} ->
@@ -1279,13 +1280,13 @@ mutual
   coeTrM msg vs tm = logC "staging" 5 (pure msg) >> case (constraints vs) of
     [] => case addLazy vs of
                NoLazy => do
-                logTerm "staging" 20 "coercion \{msg} - identity:" !(toFullNames tm)
+                logTerm "staging" 20 "coercion \{msg} - identity" !(toFullNames tm)
                 pure tm
                AddCode (MkAddCodeArg {vars=c_vars} f) => case scopeEq vars1 c_vars of
                   Just Refl => do
-                    logTerm "staging" 20 "coercion \{msg} before:" !(toFullNames tm)
+                    logTerm "staging" 20 "coercion \{msg} before" !(toFullNames tm)
                     tm' <- f tm
-                    logTerm "staging" 20 "coercion \{msg}  after:" !(toFullNames tm')
+                    logTerm "staging" 20 "coercion \{msg}  after" !(toFullNames tm')
                     pure tm'
                   Nothing => assert_total $ idris_crash "WAT - staging - coeTr"
 
@@ -1362,13 +1363,61 @@ LOG elab.unify:5: ....with: (Staging.Code Staging.Computation (Staging.Arr Stagi
         h <- mlift (coerce True) (mCode (mVar mp) (mVar m2)) (mApp (pure s) (mVar v))
         pure \x -> tLam v $ h $ TApps (TVar "PApp") [TVar mp, TVar m1, TVar m2, f x, q $ TVar v]
 -}
-    unifyWithLazyD _ _ mode loc env tmx@(NTCon xfc n _ [(_, p), (_, c)]) tmy@(NBind yfc t (Pi _ _ _ s) _) = do
+    unifyWithLazyD ref0 ref1 mode loc env tmx@(NTCon xfc n _ [(_, p), (_, c)]) tmy@(NBind yfc _ (Pi _ _ _ _) _) = do
       x@(NS (MkNS ["Staging"]) (UN (Basic "Code"))) <- toFullNames n
         | _ => unify mode loc env tmx tmy
-      logC "staging" 20 $ pure $ "TODO Code - Pi - t: " ++ show t
-      --logNF "staging" 20 "p" env p
-      --logNF "staging" 20 "c" env c
-      unify mode loc env tmx tmy -- TODO
+
+      defs <- get Ctxt
+      logC "staging" 20 $ pure "PApp - tmx: \{show !(toFullNames !(quote defs env tmx))}"
+      logC "staging" 20 $ pure "PApp - tmy: \{show !(toFullNames !(quote defs env tmy))}"
+
+      computation <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Computation"
+      _ <- unify mode loc env !(quote defs env p) computation
+
+      polarity <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Polarity"
+      value <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Value"
+      ty <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Ty"
+
+      logC "staging" 20 $ pure "PApp - 1"
+
+      mp <- metaVar emptyFC top env !(genName "mp") polarity
+      m1 <- metaVar emptyFC top env !(genName "m1") (App emptyFC ty value)
+      m2 <- metaVar emptyFC top env !(genName "m2") (App emptyFC ty mp)
+
+      code <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Code"
+      arr <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Arr"
+
+      logC "staging" 20 $ pure "PApp - 2"
+      f <- unifyWithLazyD ref0 ref1 mode loc env (apply xfc code [computation, !(quote defs env c)]) (apply xfc code [computation, apply xfc arr [mp, m1, m2]])
+
+      Bind tfc t_name t_binder@(Pi _ _ _ t) s <- quote defs env tmy
+        | _ => assert_total $ idris_crash "PApp - err1"
+
+      q <- unifyWithLazyD ref0 ref1 mode loc env t (apply xfc code [value, m1])
+
+      papp <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "PApp"
+      logC "staging" 20 $ pure "PApp - 3"
+
+      v_r <- genVarName "r"
+      let v_tm = Ref xfc Bound v_r
+
+      let got01 = Bind xfc t_name (Let xfc top v_tm t) s
+      h <- unifyWithLazyD ref0 ref1 mode loc env (apply xfc code [mp, m2]) got01
+
+      --  pure \x -> tLam v $ h $ TApps (TVar "PApp") [TVar mp, TVar m1, TVar m2, f x, q $ TVar v]
+      logC "staging" 20 $ pure "PApp - 4"
+
+      pure ({ addLazy := AddCode $ MkAddCodeArg $
+        \x => do
+          logC "staging" 20 $ pure "PApp - 5"
+          tmp <- coeTrM "PApp - h" h $ apply xfc papp [mp, m1, m2, !(coeTrM "PApp - f" f x), !(coeTrM "PApp - q" q v_tm)]
+          let lam_binder = Lam xfc top Explicit t
+              tm' = Bind xfc v_r lam_binder $ refToLocal v_r v_r tmp
+          logC "staging" 20 $ pure "PApp - 6"
+          logTerm "staging" 20 "PApp - coeTr in " !(toFullNames x)
+          logTerm "staging" 20 "PApp - coeTr out" !(toFullNames tm')
+          toResolvedNames tm'
+        } success)
 
 {-
     (VPi t s, VCode p c) -> do
@@ -1385,10 +1434,10 @@ LOG elab.unify:5: ....with: (Staging.Code Staging.Computation (Staging.Arr Stagi
     unifyWithLazyD ref0 ref1 mode loc env tmx@(NBind yfc t_name (Pi _ _ _ t_val) _) tmy@(NTCon xfc n _ [(_, p), (_, c)]) = do
       x@(NS (MkNS ["Staging"]) (UN (Basic "Code"))) <- toFullNames n
         | _ => unify mode loc env tmx tmy
-      logC "staging" 20 $ pure $ "TODO Pi - Code - t_name: " ++ show t_name
+      logC "staging" 20 $ pure $ "PLam - t_name: " ++ show t_name
       defs <- get Ctxt
-      logC "staging" 20 $ pure "TODO Pi - Code - tmx: \{show !(toFullNames !(quote defs env tmx))}"
-      logC "staging" 20 $ pure "TODO Pi - Code - t_val: \{show !(toFullNames !(quote defs env t_val))}"
+      logC "staging" 20 $ pure "PLam - tmx: \{show !(toFullNames !(quote defs env tmx))}"
+      logC "staging" 20 $ pure "PLam - t_val: \{show !(toFullNames !(quote defs env t_val))}"
       {-
           type of:
             + mp : Polarity
@@ -1399,39 +1448,37 @@ LOG elab.unify:5: ....with: (Staging.Code Staging.Computation (Staging.Arr Stagi
           - what is it in idris?
       -}
       computation <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Computation"
-      logC "staging" 20 $ pure "TODO Pi - Code - 1"
-      defs <- get Ctxt
+      logC "staging" 20 $ pure "PLam - 1"
       _ <- unify mode loc env !(quote defs env p) computation
-      logC "staging" 20 $ pure "TODO Pi - Code - 2"
+      logC "staging" 20 $ pure "PLam - 2"
 
       polarity <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Polarity"
       value <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Value"
       ty <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Ty"
-      logC "staging" 20 $ pure "TODO Pi - Code - 3"
+      logC "staging" 20 $ pure "PLam - 3"
 
       mp <- metaVar emptyFC top env !(genName "mp") polarity
       m1 <- metaVar emptyFC top env !(genName "m1") (App emptyFC ty value)
       m2 <- metaVar emptyFC top env !(genName "m2") (App emptyFC ty mp)
-      logC "staging" 20 $ pure "TODO Pi - Code - 4"
+      logC "staging" 20 $ pure "PLam - 4"
 
       code <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Code"
       arr <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "Arr"
       plam <- getRef vars emptyFC $ NS (MkNS ["Staging"]) $ UN $ Basic "PLam"
-      logC "staging" 20 $ pure "TODO Pi - Code - 5"
+      logC "staging" 20 $ pure "PLam - 5"
 
       f <- unifyWithLazyD ref0 ref1 mode loc env (apply xfc code [computation, apply xfc arr [mp, m1, m2]]) (apply xfc code [computation, !(quote defs env c)])
-      logC "staging" 20 $ pure "TODO Pi - Code - 6"
+      logC "staging" 20 $ pure "PLam - 6"
 
       --t <- getRef vars xfc t_name
       --let t = Ref xfc Bound t_name
       Bind tfc t_name t_binder@(Pi _ _ _ t) s <- quote defs env tmx
         | _ => assert_total $ idris_crash "Pi - Code - err1"
-      logC "staging" 20 $ pure "TODO Pi - Code - 7"
+      logC "staging" 20 $ pure "PLam - 7"
       q <- unifyWithLazyD ref0 ref1 mode loc env (apply xfc code [value, m1]) t
-      logC "staging" 20 $ pure "TODO Pi - Code - 8"
+      logC "staging" 20 $ pure "PLam - 8"
       v_r <- genVarName "r"
-      let lam_binder = Lam xfc top Explicit $ apply xfc code [value, m1]
-          v_tm = Ref xfc Bound v_r -- TODO: this is not a Ref
+      let v_tm = Ref xfc Bound v_r -- TODO: this is not a Ref
       {-
             -- Replace any reference to 'x' with a locally bound name 'new'
             refToLocal : (x : Name) -> (new : Name) -> Term vars -> Term (new :: vars)
@@ -1441,15 +1488,16 @@ LOG elab.unify:5: ....with: (Staging.Code Staging.Computation (Staging.Arr Stagi
       -}
       --h <- unifyWithLazyD ref0 ref1 mode loc env' (App xfc (believe_me s) $ coeTr q v_tm) (weaken $ apply xfc code [mp, m2])
 
-      let got01 = Bind xfc t_name (Let xfc top (!(coeTrM "q1" q v_tm)) t) s -- Q: what binds v_tm?
+      let got01 = Bind xfc t_name (Let xfc top (!(coeTrM "PLam - q1" q v_tm)) t) s -- Q: what binds v_tm? A: later on a Lam will bind it and refToLocal will fix names
       h <- unifyWithLazyD ref0 ref1 mode loc env got01 (apply xfc code [mp, m2])
 
       --Lam : FC -> RigCount -> PiInfo type -> (ty : type) -> Binder type
 
       pure ({ addLazy := AddCode $ MkAddCodeArg $
         \x => do
-          tmp <- coeTrM "h" h $ {-weaken $ -}App xfc x (!(coeTrM "q2" q v_tm))
-          tm' <- coeTrM "f" f $ apply xfc plam [mp, m1, m2, Bind xfc v_r lam_binder $ refToLocal v_r v_r tmp]
+          tmp <- coeTrM "PLam - h" h $ {-weaken $ -}App xfc x (!(coeTrM "PLam - q2" q v_tm))
+          let lam_binder = Lam xfc top Explicit $ apply xfc code [value, m1]
+          tm' <- coeTrM "PLam - f" f $ apply xfc plam [mp, m1, m2, Bind xfc v_r lam_binder $ refToLocal v_r v_r tmp]
           toResolvedNames tm'
         } success)
       --unify mode loc env tmx tmy -- TODO
@@ -1910,7 +1958,7 @@ retryGuess mode smode (hid, (loc, hname))
                          [] => do tm' <- case addLazy cs of
                                            NoLazy => pure tm
                                            AddCode _ => do
-                                            logC "staging" 20 $ do pure "AddCode - TODO1"
+                                            assert_total $ idris_crash "AddCode - TODO1"
                                             pure tm -- TODO
                                            AddForce r => pure $ forceMeta r envb tm
                                            AddDelay r =>
@@ -1926,7 +1974,7 @@ retryGuess mode smode (hid, (loc, hname))
                          newcs => do tm' <- case addLazy cs of
                                            NoLazy => pure tm
                                            AddCode _ => do
-                                            logC "staging" 20 $ do pure "AddCode - TODO2"
+                                            assert_total $ idris_crash "AddCode - TODO2"
                                             pure tm -- TODO
                                            AddForce r => pure $ forceMeta r envb tm
                                            AddDelay r =>
