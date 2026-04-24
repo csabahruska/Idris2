@@ -521,7 +521,9 @@ compileToSS c prof appdir tm outfile
                    , schFooter prof True
                    ]
          Right () <- coreLift $ writeFile outfile $ build scm
-            | Left err => throw (FileErr outfile err)
+            | Left err => do
+                coreLift $ putStrLn "compileToSS - 1"
+                throw (FileErr outfile err)
          coreLift_ $ chmodRaw outfile 0o755
 
 ||| Compile a Chez Scheme source file to an executable, daringly with runtime checks off.
@@ -536,7 +538,9 @@ compileToSO prof chez appDirRel outSsAbs
                      "[compile-file-message #f]) (compile-program " ++
                     show outSsAbs ++ "))"
          Right () <- coreLift $ writeFile tmpFileAbs build
-            | Left err => throw (FileErr tmpFileAbs err)
+            | Left err => do
+                coreLift $ putStrLn "compileToSO - 1"
+                throw (FileErr tmpFileAbs err)
          coreLift_ $ chmodRaw tmpFileAbs 0o755
          0 <- coreLift $ system [chez, "--script", tmpFileAbs]
             | status => throw (InternalError "Chez exited with return code \{show status}")
@@ -566,7 +570,9 @@ compileToSSInc c mods libs appdir tm outfile
                    main ++ schFooter False False
 
          Right () <- coreLift $ writeFile outfile $ build scm
-            | Left err => throw (FileErr outfile err)
+            | Left err => do
+                coreLift $ putStrLn "compileToSSInc - 1"
+                throw (FileErr outfile err)
          coreLift_ $ chmodRaw outfile 0o755
          pure ()
 
@@ -574,7 +580,9 @@ compileToSSInc c mods libs appdir tm outfile
 makeSh : String -> String -> String -> Core ()
 makeSh outShRel appdir outAbs
     = do Right () <- coreLift $ writeFile outShRel (startChez appdir outAbs)
-            | Left err => throw (FileErr outShRel err)
+            | Left err => do
+                coreLift $ putStrLn "makeSh - 1"
+                throw (FileErr outShRel err)
          pure ()
 
 ||| Make Windows start scripts, one for bash environments and one batch file
@@ -698,16 +706,26 @@ incCompile c s sourceFile
                compdefs <- traverse (getScheme empty (chezExtPrim empty defaultLaziness) chezString defaultLaziness) sortedDefs
                let code = concat $ map snd fgndefs ++ compdefs
                Right () <- coreLift $ writeFile ssFile $ build code
-                  | Left err => throw (FileErr ssFile err)
+                  | Left err => do
+                      coreLift $ putStrLn "incCompile - 1"
+                      throw (FileErr ssFile err)
+
+{-
+compileChezLibrary : (chez : String) -> (libDir : String) -> (ssFile : String) -> Core ()
+compileChezLibrary chez libDir ssFile = coreLift_ $ system
+  [ "echo"
+  , "'(parameterize ([optimize-level 3] [compile-file-message #f]) (compile-library " ++ build (chezString ssFile) ++ "))'"
+  , "'(delete-file " ++ build (chezString ssFile) ++ ")'"
+  , "|", chez, "-q", "--libdirs", libDir
+  ]
+-}
 
                -- Compile to .so
-               let tmpFileAbs = outputDir </> "compileChez"
-               let build = "(parameterize ([optimize-level 3] " ++
-                           "[compile-file-message #f]) (compile-file " ++
-                          show ssFile ++ "))"
-               Right () <- coreLift $ writeFile tmpFileAbs build
-                  | Left err => throw (FileErr tmpFileAbs err)
-               0 <- coreLift $ system [chez, "--script", tmpFileAbs]
+               --let tmpFileAbs = outputDir </> "compileChez"
+               let str = "'(parameterize ([optimize-level 3] [compile-file-message #f]) (compile-file " ++ build (chezString ssFile) ++ "))'"
+               --Right () <- coreLift $ writeFile tmpFileAbs build
+               --   | Left err => throw (FileErr tmpFileAbs err)
+               0 <- coreLift $ system "echo \{str} | \{chez} >/dev/null" -- , "--script", tmpFileAbs]
                   | status => throw (InternalError "Chez exited with return code \{show status}")
                pure (Just (soFilename, mapMaybe fst fgndefs))
 

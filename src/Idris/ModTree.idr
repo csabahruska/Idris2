@@ -19,8 +19,12 @@ import Idris.Pretty
 import Data.List
 import Data.Either
 import Data.String
+import Data.SortedMap
+import Data.IORef
 
+import System
 import System.Directory
+import System.Concurrency
 
 import Libraries.Data.StringMap
 import Libraries.Data.String.Extra as Extra
@@ -225,7 +229,6 @@ needsBuilding sourceFile ttcFile depFiles
          | Left err => throw (FileErr ttcFile err)
        pure True
 
-
 buildMod : {auto c : Ref Ctxt Defs} ->
            {auto s : Ref Syn SyntaxInfo} ->
            {auto o : Ref ROpts REPLOpts} ->
@@ -281,6 +284,144 @@ buildMods fc num len (m :: ms)
            [] => buildMods fc (1 + num) len ms
            errs => pure errs
 
+{-
+fork : (1 prog : IO ()) -> IO ThreadID
+threadWait : (1 threadID : ThreadID) -> IO ()
+
+makeChannel : HasIO io => io (Channel a)
+channelGet : HasIO io => (chan : Channel a) -> io a
+channelPut : HasIO io => (chan : Channel a) -> (val : a) -> io ()
+
+newRef : (0 x : label) -> t -> Core (Ref x t)
+get : (0 x : label) -> {auto ref : Ref x a} -> Core a
+put : (0 x : label) -> {auto ref : Ref x a} -> a -> Core ()
+
+coreRun : Core a -> (Error -> IO b) -> (a -> IO b) -> IO b
+
+    coreRun (stMain cgs opts)
+      (\err : Error => do ignore $ fPutStrLn stderr $ "Uncaught error: " ++ show err
+                          exitWith (ExitFailure 1))
+      (\res => pure ())
+
+makeSemaphore : HasIO io => Int -> io Semaphore
+semaphorePost : HasIO io => Semaphore -> io ()
+semaphoreWait : HasIO io => Semaphore -> io ()
+-}
+buildModsPar : {auto c : Ref Ctxt Defs} ->
+               {auto s : Ref Syn SyntaxInfo} ->
+               {auto o : Ref ROpts REPLOpts} ->
+               FC -> Nat -> Nat -> List BuildMod ->
+               Core (List Error)
+buildModsPar fc num_ len mods = do
+  {-
+    - clone refs
+  -}
+  c_val <- get Ctxt
+  s_val <- get Syn
+  o_val <- get ROpts
+  --coreLift $ putStrLn "buildModsPar - 1"
+  isCancelledRef <- coreLift $ newIORef False
+  resChan <- coreLift $ makeChannel
+  --coreLift $ putStrLn "buildModsPar - 2"
+  numRef <- coreLift $ newIORef 1
+  lock <- coreLift $ makeMutex
+  let getNum : IO Nat
+      getNum = do
+        mutexAcquire lock
+        n <- readIORef numRef
+        writeIORef numRef (n + 1)
+        mutexRelease lock
+        pure n
+
+  let worker : Semaphore -> List (ModuleIdent, Semaphore) -> BuildMod -> Core ()
+      worker sem depTids mod = do
+        --coreLift $ putStrLn "buildModsPar - start - worker \{show num} - \{show mod}"
+        for_ depTids $ \(i, tid) => do
+          --coreLift $ putStrLn "buildModsPar - worker \{show num} - \{show mod.buildNS} - waiting for \{show i}"
+          coreLift $ semaphoreWait tid
+          coreLift $ semaphorePost tid
+          --coreLift $ putStrLn "buildModsPar - worker \{show num} - waiting for \{show i} END"
+        --coreLift $ putStrLn "buildModsPar - worker \{show num} - 1"
+        isCancelled <- coreLift $ readIORef isCancelledRef
+        --coreLift $ putStrLn "buildModsPar - worker \{show num} - 2"
+        r <- if isCancelled
+          then do
+            let e : List Error
+                e = []
+            --coreLift $ putStrLn "buildModsPar - worker \{show num} - 3"
+            pure e
+          else do
+            c <- newRef Ctxt c_val
+            s <- newRef Syn s_val
+            o <- newRef ROpts o_val
+            num <- coreLift getNum
+            --coreLift $ putStrLn "buildModsPar - worker \{show num} - 4"
+            buildMod {c} {s} {o} fc num len mod
+        --coreLift $ putStrLn "buildModsPar - worker \{show num} - 5"
+        coreLift $ channelPut resChan r
+        --coreLift $ putStrLn "buildModsPar - finished - worker \{show num} - \{show mod.buildNS}"
+        coreLift $ semaphorePost sem
+
+  let spawnWorker : Semaphore -> List (ModuleIdent, Semaphore) -> BuildMod -> Core ThreadID
+      spawnWorker sem depTids mod = coreLift $ fork $ do
+        coreRun (worker sem depTids mod)
+          (\err : Error => do ignore $ fPutStrLn stderr $ "Uncaught error: " ++ show err
+                              exitWith (ExitFailure 1))
+          (\res => pure ())
+
+  let go : SortedMap ModuleIdent (ModuleIdent, Semaphore) -> List BuildMod -> Core ()
+      go _ [] = pure ()
+      go s (m :: ms) = do
+        let getTid : ModuleIdent -> Maybe (ModuleIdent, Semaphore)
+            getTid i = lookup i s
+            {-
+            getTid i = case lookup i s of
+              Nothing => assert_total $ idris_crash "no tid for \{show i}"
+              Just t  => t
+            -}
+        let depTids = mapMaybe id $ map getTid m.imports
+        --coreLift $ putStrLn "buildModsPar - go - \{show num} - 1"
+        sem <- coreLift $ makeSemaphore 0
+        tid <- spawnWorker sem depTids m
+        --coreLift $ putStrLn "buildModsPar - worker \{show num} - tid: "
+        go (insert m.buildNS (m.buildNS, sem) s) ms
+
+  --coreLift $ putStrLn "buildModsPar - 1"
+  go empty mods
+  --coreLift $ putStrLn "buildModsPar - 2"
+
+  -- process results
+  let go2 : Nat -> List (List Error) -> List BuildMod -> Core (List Error)
+      go2 num errs [] = pure $ concat errs
+      go2 num errs (m :: ms) = do
+        case !(coreLift $ channelGet resChan) of
+           [] => do
+            --coreLift $ putStrLn "buildModsPar - result \{show num} - ok"
+            go2 (num + 1) errs ms
+           e  => do
+            --coreLift $ putStrLn "buildModsPar - result \{show num} - error"
+            coreLift $ writeIORef isCancelledRef True
+            --coreLift $ putStrLn "buildModsPar - go2 - 2"
+            go2 (num + 1) (e :: errs) ms
+
+  --coreLift $ putStrLn "buildModsPar - 3"
+  go2 1 [] mods
+  {-
+    - error channel
+    - wait for deps to finish
+    - had error flag
+  -}
+  {-
+    1) start
+        - return 
+    2) collect
+  -}
+  {-
+    idea:
+      - deps: wait for threads
+      - main: wait for each result via channels
+  -}
+
 export
 buildDeps : {auto c : Ref Ctxt Defs} ->
             {auto s : Ref Syn SyntaxInfo} ->
@@ -292,7 +433,7 @@ buildDeps : {auto c : Ref Ctxt Defs} ->
 buildDeps fname
     = do mods <- getBuildMods EmptyFC [] fname
          log "import" 20 $ "Needs to rebuild: " ++ show mods
-         ok <- buildMods EmptyFC 1 (length mods) mods
+         ok <- buildModsPar EmptyFC 1 (length mods) mods
          case ok of
               [] => do -- On success, reload the main ttc in a clean context
                        clearCtxt; addPrimitives
@@ -329,7 +470,7 @@ buildAll allFiles
     = do mods <- getAllBuildMods EmptyFC [] allFiles
          -- There'll be duplicates, so if something is already built, drop it
          let mods' = dropLater mods
-         buildMods EmptyFC 1 (length mods') mods'
+         buildModsPar EmptyFC 1 (length mods') mods'
   where
     dropLater : List BuildMod -> List BuildMod
     dropLater [] = []
