@@ -530,7 +530,9 @@ buildModsPar2 fc num_ len mods = do
   --coreLift $ putStrLn "buildModsPar2"
   --coreLift $ for_ mods $ \m => putStrLn "\{show m}"
 
-  let numWorkers = 3
+  for_ mods $ \m => makeBuildDirectory m.buildNS
+
+  let numWorkers = 8
 
   -- clone refs
   c_val <- get Ctxt
