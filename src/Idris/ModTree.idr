@@ -422,6 +422,261 @@ buildModsPar fc num_ len mods = do
       - main: wait for each result via channels
   -}
 
+{-
+  new design: work stealing
+  idea:
+    N workers
+    one work queue
+    one work query function
+    task states: todo, work-in-progress, done
+    one task finished ack function
+
+    when there is no work then the worker goes to sleep and will wait for a wake up event, which is sent by the task ack function
+
+    data structures:
+      mods      : Map ModuleIdent BuildMod
+      ready     : SortedMap Int [ModuleIdent] -- prioritise which blocks more
+        IDEA for ranking factors:
+          + number of blocked modules
+          + weight rankings transitively ; i.e. use childrend ranking also with some weights
+          Q: use single step ranking function or is the weighted transitive ranking function better?
+      blockedBy : Map ModuleIdent [ModuleIdent]
+      blockes   : Map ModuleIdent [ModuleIdent]
+
+    init: build ready and blocked from mod list and mods
+
+  TODO:
+    - replace conditionBroadcast with explicit worker thread wakeup management
+-}
+
+{-
+SAMPLE:
+
+-- Test `conditionBroadcast` wakes all threads for 1 main and N child threads
+
+main : IO ()
+main =
+  let n = 3 in
+  do cvMutex <- makeMutex
+     cv <- makeCondition
+     ts <- for [1..n] $ \_ => fork $ do mutexAcquire cvMutex
+                                        conditionWait cv cvMutex
+                                        putStrLn "Hello mother"
+                                        mutexRelease cvMutex
+     putStrLn "Hello children"
+     sleep 1
+     conditionBroadcast cv
+     ignore $ for ts $ \t => threadWait t
+     sleep 1
+-}
+
+record Work where
+  constructor MkWork
+  mods      : SortedMap ModuleIdent BuildMod
+  ready     : SortedMap Int (List BuildMod)
+  blockedBy : SortedMap ModuleIdent (List ModuleIdent)
+  blocks    : SortedMap ModuleIdent (List ModuleIdent)
+  errors    : Maybe (Nat, List (List Error))
+  num       : Nat
+
+initWork : List BuildMod -> Work
+initWork l = initReady $ initBlocks $ foldl upd w0 l
+  where
+    initReady : Work -> Work
+    initReady w = {ready := fromListWith (++) [(negate $ cast $ length x, [m]) | m <- l, isNothing (lookup m.buildNS w.blockedBy), let x = fromMaybe [] (lookup m.buildNS w.blocks)]} w
+
+    initBlocks : Work -> Work
+    initBlocks w = {blocks := fromListWith (++) [(b, [a]) | (a, l) <- kvList w.blockedBy, b <- l]} w
+
+    upd : Work -> BuildMod -> Work
+    upd w m =
+      case filter (isJust . lookup' w.mods) m.imports of
+        []  => w
+        il  => {blockedBy $= insert m.buildNS il} w
+
+    w0 = MkWork
+      { mods      = fromList [(m.buildNS, m) | m <- l]
+      , ready     = empty
+      , blockedBy = empty
+      , blocks    = empty
+      , errors    = Nothing
+      , num       = 1
+      }
+
+data WorkerCommand
+  = Job Nat BuildMod
+  | NoWork
+  | Finished
+
+buildModsPar2 : {auto c : Ref Ctxt Defs} ->
+                {auto s : Ref Syn SyntaxInfo} ->
+                {auto o : Ref ROpts REPLOpts} ->
+                FC -> Nat -> Nat -> List BuildMod ->
+                Core (List Error)
+buildModsPar2 fc num_ len mods = do
+
+  --coreLift $ putStrLn "buildModsPar2"
+  --coreLift $ for_ mods $ \m => putStrLn "\{show m}"
+
+  let numWorkers = 3
+
+  -- clone refs
+  c_val <- get Ctxt
+  s_val <- get Syn
+  o_val <- get ROpts
+
+  resChan <- coreLift $ makeChannel
+
+  cvMutex <- coreLift $ makeMutex
+  cv <- coreLift $ makeCondition
+
+  workMutex <- coreLift $ makeMutex
+  let iw0 = initWork mods
+  --coreLift $ putStrLn "initWork.ready"
+  --coreLift $ for_ iw0.ready $ \m => putStrLn "\{show m}"
+  workRef <- coreLift $ newIORef iw0
+
+  let mergeErrors : List (List Error) -> Maybe (ModuleIdent, List Error) -> List (List Error)
+      mergeErrors errs Nothing = errs
+      mergeErrors errs (Just (_, e)) = e :: errs
+
+  let markDone : ModuleIdent -> Work -> Work
+      markDone modId work =
+        let l = fromMaybe [] $ lookup modId work.blocks
+        in foldl upd ({blocks $= delete modId} work) l
+       where
+        getMod : ModuleIdent -> BuildMod
+        getMod mi = case lookup mi work.mods of
+          Nothing => assert_total $ idris_crash "markDone4 \{show mi}"
+          Just m  => m
+
+        getRank : ModuleIdent -> Int
+        getRank mi = case lookup mi work.blocks of
+          Nothing => 0 -- assert_total $ idris_crash "markDone3 \{show mi}"
+          Just l  => negate $ cast $ length l -- negate is to make the largest number to be the left most in the sorted map for the pop operation
+
+        upd : Work -> ModuleIdent -> Work
+        upd w mi =
+          let Just l = lookup mi w.blockedBy
+                | Nothing => assert_total $ idris_crash "markDone2 \{show mi}"
+          in case [m | m <- l, m /= modId] of
+                [] => { ready     $= insertWith (++) (getRank mi) [getMod mi]
+                      , blockedBy $= delete mi } w
+                x  => { blockedBy $= insert mi x} w
+      {-
+          ready     : SortedMap Int (List BuildMod)
+          blockedBy : SortedMap ModuleIdent (List ModuleIdent)
+          blocks    : SortedMap ModuleIdent (List ModuleIdent)
+        update
+          - blocks ;
+            done + remove key
+                 + update blockedBy by removing finished ModuleIdent
+          - blockedBy ; if not blocked then remove key and add to ready
+          - ready ; lookup rank from blocks map ; HINT: it's ModuleIdent must present in that map
+      -}
+
+  let getWork : Nat -> Maybe (ModuleIdent, List Error) -> IO WorkerCommand
+      nextJob : Nat -> Work -> IO WorkerCommand
+
+      nextJob i work = case (pop work.ready, null work.blockedBy) of
+        (Nothing, True) => do
+          --putStrLn "nextJob \{show i} - DONE"
+          writeIORef workRef ({errors := Just (numWorkers, [])} work)
+          mutexRelease workMutex
+          --putStrLn "nextJob \{show i} - DONE - released"
+          getWork i Nothing
+        (Nothing, False) => do
+          --putStrLn "nextJob \{show i} - SLEEP"
+          writeIORef workRef work
+          mutexRelease workMutex
+          --putStrLn "nextJob \{show i} - SLEEP - released"
+          pure NoWork
+        (Just ((_, []), ready'), _) => do
+          --putStrLn "nextJob \{show i} - AGAIN"
+          nextJob i ({ready := ready'} work)
+        (Just ((rank, mod :: mods), ready'), _) => do
+          --putStrLn "nextJob \{show i} - DO NEXT JOB \{show work.num}"
+          writeIORef workRef ({ready := insert rank mods ready', num $= (+) 1} work)
+          mutexRelease workMutex
+          --putStrLn "nextJob \{show i} - DO NEXT JOB \{show work.num} - released"
+          pure $ Job work.num mod
+
+      getWork i result = do
+        --putStrLn "getWork \{show i} \{show result}"
+        mutexAcquire workMutex
+        --putStrLn "getWork \{show i} \{show result} - locked"
+        whenJust result $ \_ => do
+          conditionBroadcast cv
+          --putStrLn "getWork \{show i} \{show result} - broadcast"
+        work <- readIORef workRef
+        Nothing <- pure work.errors
+          -- exit
+          | Just (0, errs) => assert_total $ idris_crash "getWork"
+          | Just (1, errs) => do
+            --putStrLn "getWork \{show i} EXIT"
+            channelPut resChan $ concat $ mergeErrors errs result
+            --putStrLn "getWork \{show i} EXIT - final result sent"
+            mutexRelease workMutex
+            --putStrLn "getWork \{show i} EXIT - released"
+            pure Finished
+          -- wait for worker threads
+          | Just (S n, errs) => do
+            --putStrLn "getWork \{show i} WAIT FOR WORKERS TO FINISH \{show n}"
+            writeIORef workRef ({errors := Just (n, mergeErrors errs result)} work)
+            mutexRelease workMutex
+            --putStrLn "getWork \{show i} WAIT FOR WORKERS TO FINISH \{show n} - released"
+            pure Finished
+        case result of
+          Nothing => nextJob i work
+          Just (modId, []) => nextJob i $ markDone modId work
+          Just (_, errs) => do
+            --putStrLn "getWork \{show i} ERROR"
+            writeIORef workRef ({errors := Just (numWorkers, [])} work)
+            mutexRelease workMutex
+            --putStrLn "getWork \{show i} ERROR - released"
+            getWork i result
+
+        {-
+          TODO:
+            - process result
+              + ok: update blocking structures and ready queue
+              + error: collect results and wait for all workers to finish by waiting for (N-1) getWork in-calls
+        -}
+
+  let worker : Nat -> WorkerCommand -> Core ()
+      worker i Finished = do
+        --coreLift $ putStrLn "worker \{show i} - Finished"
+        pure ()
+      worker i NoWork = do
+        coreLift $ do
+          --putStrLn "worker \{show i} - NoWork"
+          mutexAcquire cvMutex
+          --putStrLn "worker \{show i} - NoWork - sleep - start"
+          conditionWait cv cvMutex
+          --putStrLn "worker \{show i} - NoWork - sleep - ended"
+          mutexRelease cvMutex
+        coreLift (getWork i Nothing) >>= worker i
+      worker i (Job num mod) = do
+        --coreLift $ putStrLn "worker \{show i} - Job \{show num} \{show mod}"
+        c <- newRef Ctxt c_val
+        s <- newRef Syn s_val
+        o <- newRef ROpts o_val
+        r <- buildMod {c} {s} {o} fc num len mod
+        --coreLift $ putStrLn "worker \{show i} - done - Job \{show num} \{show mod}"
+        coreLift (getWork i (Just (mod.buildNS, r))) >>= worker i
+
+  let spawnWorker : Nat -> Core ThreadID
+      spawnWorker i = coreLift $ fork $ do
+        coreRun (coreLift (getWork i Nothing) >>= worker i)
+          (\err : Error => do ignore $ fPutStrLn stderr $ "Uncaught error: " ++ show err
+                              exitWith (ExitFailure 1))
+          (\res => pure ())
+
+  worker_tids <- for [1..numWorkers] spawnWorker
+
+  -- wait for results
+  coreLift $ channelGet resChan
+
 export
 buildDeps : {auto c : Ref Ctxt Defs} ->
             {auto s : Ref Syn SyntaxInfo} ->
@@ -433,7 +688,7 @@ buildDeps : {auto c : Ref Ctxt Defs} ->
 buildDeps fname
     = do mods <- getBuildMods EmptyFC [] fname
          log "import" 20 $ "Needs to rebuild: " ++ show mods
-         ok <- buildModsPar EmptyFC 1 (length mods) mods
+         ok <- buildModsPar2 EmptyFC 1 (length mods) mods
          case ok of
               [] => do -- On success, reload the main ttc in a clean context
                        clearCtxt; addPrimitives
@@ -470,7 +725,7 @@ buildAll allFiles
     = do mods <- getAllBuildMods EmptyFC [] allFiles
          -- There'll be duplicates, so if something is already built, drop it
          let mods' = dropLater mods
-         buildModsPar EmptyFC 1 (length mods') mods'
+         buildModsPar2 EmptyFC 1 (length mods') mods'
   where
     dropLater : List BuildMod -> List BuildMod
     dropLater [] = []
