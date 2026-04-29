@@ -16,6 +16,7 @@ import Idris.REPL.Common
 import Idris.Syntax
 import Idris.Pretty
 
+import Data.Nat
 import Data.List
 import Data.Either
 import Data.String
@@ -446,11 +447,15 @@ buildModsPar fc num_ len mods = do
     init: build ready and blocked from mod list and mods
 
   TODO:
-    - replace conditionBroadcast with explicit worker thread wakeup management
+    done - replace conditionBroadcast with explicit worker thread wakeup management
+    - use global rank ; transitive closure of deps ; precalculate ranks
 -}
 
 {-
 SAMPLE:
+
+||| Releases one of the threads waiting for the condition identified by `cond`.
+conditionSignal : HasIO io => Condition -> io ()
 
 -- Test `conditionBroadcast` wakes all threads for 1 main and N child threads
 
@@ -478,10 +483,15 @@ record Work where
   blocks    : SortedMap ModuleIdent (List ModuleIdent)
   errors    : Maybe (Nat, List (List Error))
   num       : Nat
+  readySize : Nat -- TODO: wake up workers when necessary
+  sleepNum  : Nat
 
 initWork : List BuildMod -> Work
-initWork l = initReady $ initBlocks $ foldl upd w0 l
+initWork l = initReadySize . initReady . initBlocks $ foldl upd w0 l
   where
+    initReadySize : Work -> Work
+    initReadySize w = {readySize := length $ concat $ values w.ready} w
+
     initReady : Work -> Work
     initReady w = {ready := fromListWith (++) [(negate $ cast $ length x, [m]) | m <- l, isNothing (lookup m.buildNS w.blockedBy), let x = fromMaybe [] (lookup m.buildNS w.blocks)]} w
 
@@ -501,6 +511,8 @@ initWork l = initReady $ initBlocks $ foldl upd w0 l
       , blocks    = empty
       , errors    = Nothing
       , num       = 1
+      , readySize = 0
+      , sleepNum  = 0
       }
 
 data WorkerCommand
@@ -561,6 +573,7 @@ buildModsPar2 fc num_ len mods = do
                 | Nothing => assert_total $ idris_crash "markDone2 \{show mi}"
           in case [m | m <- l, m /= modId] of
                 [] => { ready     $= insertWith (++) (getRank mi) [getMod mi]
+                      , readySize $= S
                       , blockedBy $= delete mi } w
                 x  => { blockedBy $= insert mi x} w
       {-
@@ -582,12 +595,13 @@ buildModsPar2 fc num_ len mods = do
         (Nothing, True) => do
           --putStrLn "nextJob \{show i} - DONE"
           writeIORef workRef ({errors := Just (numWorkers, [])} work)
+          conditionBroadcast cv
           mutexRelease workMutex
           --putStrLn "nextJob \{show i} - DONE - released"
           getWork i Nothing
         (Nothing, False) => do
           --putStrLn "nextJob \{show i} - SLEEP"
-          writeIORef workRef work
+          writeIORef workRef ({sleepNum $= S} work)
           mutexRelease workMutex
           --putStrLn "nextJob \{show i} - SLEEP - released"
           pure NoWork
@@ -596,7 +610,16 @@ buildModsPar2 fc num_ len mods = do
           nextJob i ({ready := ready'} work)
         (Just ((rank, mod :: mods), ready'), _) => do
           --putStrLn "nextJob \{show i} - DO NEXT JOB \{show work.num}"
-          writeIORef workRef ({ready := insert rank mods ready', num $= (+) 1} work)
+          let wakeUpWorkers : Nat -> Work -> IO Work
+              wakeUpWorkers n w = case (n, w.sleepNum) of
+                (S nJob, S nWorker) => do
+                  conditionSignal cv
+                  wakeUpWorkers nJob ({sleepNum := nWorker} w)
+                _ => pure w
+          let w1 = {ready := insert rank mods ready', num $= (+) 1, readySize $= pred} work
+          w2 <- wakeUpWorkers w1.readySize w1
+          writeIORef workRef w2
+          -- TODO: wake up sleeping worker threads
           mutexRelease workMutex
           --putStrLn "nextJob \{show i} - DO NEXT JOB \{show work.num} - released"
           pure $ Job work.num mod
@@ -605,8 +628,8 @@ buildModsPar2 fc num_ len mods = do
         --putStrLn "getWork \{show i} \{show result}"
         mutexAcquire workMutex
         --putStrLn "getWork \{show i} \{show result} - locked"
-        whenJust result $ \_ => do
-          conditionBroadcast cv
+        --whenJust result $ \_ => do
+          --conditionBroadcast cv
           --putStrLn "getWork \{show i} \{show result} - broadcast"
         work <- readIORef workRef
         Nothing <- pure work.errors
@@ -632,6 +655,7 @@ buildModsPar2 fc num_ len mods = do
           Just (_, errs) => do
             --putStrLn "getWork \{show i} ERROR"
             writeIORef workRef ({errors := Just (numWorkers, [])} work)
+            conditionBroadcast cv
             mutexRelease workMutex
             --putStrLn "getWork \{show i} ERROR - released"
             getWork i result
