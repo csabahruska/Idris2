@@ -21,6 +21,7 @@ import Data.List
 import Data.Either
 import Data.String
 import Data.SortedMap
+import Data.SortedSet
 import Data.IORef
 
 import System
@@ -448,31 +449,13 @@ buildModsPar fc num_ len mods = do
 
   TODO:
     done - replace conditionBroadcast with explicit worker thread wakeup management
-    - use global rank ; transitive closure of deps ; precalculate ranks
--}
+    CANCEL - use global rank ; transitive closure of deps ; precalculate ranks
+    - new rank design ; save and reuse module build times
 
-{-
-SAMPLE:
-
-||| Releases one of the threads waiting for the condition identified by `cond`.
-conditionSignal : HasIO io => Condition -> io ()
-
--- Test `conditionBroadcast` wakes all threads for 1 main and N child threads
-
-main : IO ()
-main =
-  let n = 3 in
-  do cvMutex <- makeMutex
-     cv <- makeCondition
-     ts <- for [1..n] $ \_ => fork $ do mutexAcquire cvMutex
-                                        conditionWait cv cvMutex
-                                        putStrLn "Hello mother"
-                                        mutexRelease cvMutex
-     putStrLn "Hello children"
-     sleep 1
-     conditionBroadcast cv
-     ignore $ for ts $ \t => threadWait t
-     sleep 1
+  TODO:
+    RANK DESIGN:
+      - critical path method (CPM) ; longest dependency chain -> higher rank
+      - shortest job first (SJF)
 -}
 
 record Work where
@@ -481,19 +464,42 @@ record Work where
   ready     : SortedMap Int (List BuildMod)
   blockedBy : SortedMap ModuleIdent (List ModuleIdent)
   blocks    : SortedMap ModuleIdent (List ModuleIdent)
+  critical  : SortedMap ModuleIdent Nat -- critical path length
   errors    : Maybe (Nat, List (List Error))
   num       : Nat
   readySize : Nat -- TODO: wake up workers when necessary
   sleepNum  : Nat
 
 initWork : List BuildMod -> Work
-initWork l = initReadySize . initReady . initBlocks $ foldl upd w0 l
+initWork l = initReadySize . initReady . initCriticalPath . initBlocks $ foldl upd w0 l
   where
+
+    getRank : Work -> ModuleIdent -> Int
+    getRank w m = case lookup m w.critical of
+      Nothing => assert_total $ idris_crash "getRank1"
+      Just r  => negate $ cast $ r
+
+    initCriticalPath : Work -> Work
+    initCriticalPath w = foldl go w (reverse l) where
+
+      getCritical : Work -> ModuleIdent -> Nat
+      getCritical w m = case lookup m w.critical of
+        Nothing => assert_total $ idris_crash "getCritical"
+        Just n  => 1 + n
+
+      getBlocks : Work -> ModuleIdent -> List ModuleIdent
+      getBlocks w m = case lookup m w.blocks of
+        Nothing => []
+        Just n  => n
+
+      go : Work -> BuildMod -> Work
+      go w m = {critical $= insert m.buildNS (concatMap @{Maximum} (getCritical w) (getBlocks w m.buildNS))} w
+
     initReadySize : Work -> Work
     initReadySize w = {readySize := length $ concat $ values w.ready} w
 
     initReady : Work -> Work
-    initReady w = {ready := fromListWith (++) [(negate $ cast $ length x, [m]) | m <- l, isNothing (lookup m.buildNS w.blockedBy), let x = fromMaybe [] (lookup m.buildNS w.blocks)]} w
+    initReady w = {ready := fromListWith (++) [(getRank w m.buildNS, [m]) | m <- l, isNothing (lookup m.buildNS w.blockedBy)]} w
 
     initBlocks : Work -> Work
     initBlocks w = {blocks := fromListWith (++) [(b, [a]) | (a, l) <- kvList w.blockedBy, b <- l]} w
@@ -509,6 +515,7 @@ initWork l = initReadySize . initReady . initBlocks $ foldl upd w0 l
       , ready     = empty
       , blockedBy = empty
       , blocks    = empty
+      , critical  = empty
       , errors    = Nothing
       , num       = 1
       , readySize = 0
@@ -519,6 +526,17 @@ data WorkerCommand
   = Job Nat BuildMod
   | NoWork
   | Finished
+
+exportBuildDeps : String -> List BuildMod -> Core ()
+exportBuildDeps fp mods = do
+  let s = fromList [m.buildNS | m <- mods]
+      fEdges = fp ++ "-edges.tsv"
+      fNodes = fp ++ "-nodes.tsv"
+  Right () <- coreLift $ writeFile fNodes $ unlines $ "ID\tlabel" :: ["\{show m.buildNS}\t\{show m.buildNS}" | m <- mods]
+    | Left err => throw (FileErr fNodes err)
+  Right () <- coreLift $ writeFile fEdges $ unlines $ "Source\tTarget" :: ["\{show m.buildNS}\t\{show i}" | m <- mods, i <- m.imports, contains i s]
+    | Left err => throw (FileErr fEdges err)
+  pure ()
 
 buildModsPar2 : {auto c : Ref Ctxt Defs} ->
                 {auto s : Ref Syn SyntaxInfo} ->
@@ -532,7 +550,9 @@ buildModsPar2 fc num_ len mods = do
 
   for_ mods $ \m => makeBuildDirectory m.buildNS
 
-  let numWorkers = 8
+  --exportBuildDeps "\{!(ttcBuildDirectory)}/build-deps" mods
+
+  let numWorkers = 3
 
   -- clone refs
   c_val <- get Ctxt
@@ -548,6 +568,10 @@ buildModsPar2 fc num_ len mods = do
   let iw0 = initWork mods
   --coreLift $ putStrLn "initWork.ready"
   --coreLift $ for_ iw0.ready $ \m => putStrLn "\{show m}"
+
+  --coreLift $ putStrLn "initWork.critical"
+  --coreLift $ for_ (sortBy (\(_,a), (_,b) => compare a b) $ Data.SortedMap.toList iw0.critical) $ \(m, n) => putStrLn "\{show n} - \{show m}"
+
   workRef <- coreLift $ newIORef iw0
 
   let mergeErrors : List (List Error) -> Maybe (ModuleIdent, List Error) -> List (List Error)
@@ -565,9 +589,9 @@ buildModsPar2 fc num_ len mods = do
           Just m  => m
 
         getRank : ModuleIdent -> Int
-        getRank mi = case lookup mi work.blocks of
-          Nothing => 0 -- assert_total $ idris_crash "markDone3 \{show mi}"
-          Just l  => negate $ cast $ length l -- negate is to make the largest number to be the left most in the sorted map for the pop operation
+        getRank mi = case lookup mi work.critical of
+          Nothing => assert_total $ idris_crash "getRank \{show mi}"
+          Just r  => negate $ cast r -- negate is to make the largest number to be the left most in the sorted map for the pop operation
 
         upd : Work -> ModuleIdent -> Work
         upd w mi =
@@ -593,7 +617,9 @@ buildModsPar2 fc num_ len mods = do
   let getWork : Nat -> Maybe (ModuleIdent, List Error) -> IO WorkerCommand
       nextJob : Nat -> Work -> IO WorkerCommand
 
-      nextJob i work = case (pop work.ready, null work.blockedBy) of
+      nextJob i work = do
+       --putStrLn "nextJob \{show i} ready: \{show $ [(r, map buildNS m) | (r,m) <- kvList work.ready]}"
+       case (pop work.ready, null work.blockedBy) of
         (Nothing, True) => do
           --putStrLn "nextJob \{show i} - DONE"
           writeIORef workRef ({errors := Just (numWorkers, [])} work)
@@ -683,12 +709,12 @@ buildModsPar2 fc num_ len mods = do
           mutexRelease cvMutex
         coreLift (getWork i Nothing) >>= worker i
       worker i (Job num mod) = do
-        --coreLift $ putStrLn "worker \{show i} - Job \{show num} \{show mod}"
+        --coreLift $ putStrLn "START worker \{show i} - Job \{show num} \{show mod}"
         c <- newRef Ctxt c_val
         s <- newRef Syn s_val
         o <- newRef ROpts o_val
-        r <- buildMod {c} {s} {o} fc num len mod
-        --coreLift $ putStrLn "worker \{show i} - done - Job \{show num} \{show mod}"
+        r <- {-logTimeWhen {c} True 0 "\{show num}/\{show len} \{show mod.buildNS}" $ -}buildMod {c} {s} {o} fc num len mod
+        --coreLift $ putStrLn "FINISHED worker \{show i} - done - Job \{show num} \{show mod}"
         coreLift (getWork i (Just (mod.buildNS, r))) >>= worker i
 
   let spawnWorker : Nat -> Core ThreadID
