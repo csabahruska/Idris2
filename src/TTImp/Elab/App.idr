@@ -758,12 +758,13 @@ mutual
                          ctm <- newConstant fc rig env (fst res) cty cs
                          log "staging" 5 "checkAppWith' - TODO coeTR - 1"
                          let App fc tm argv = ctm
-                              | _ => assert_total $ idris_crash "checkAppWith' - err1"
+                              | Meta{} => pure (ctm, gnf env retTy) -- TODO: is this correct?
+                              | _ => assert_total $ idris_crash "checkAppWith' - err1-1: \{show ctm}"
                          tm' <- coeTrM "checkAppWith' - 1" cres tm
                          pure (App fc tm' argv, gnf env retTy)
            log "staging" 5 "checkAppWith' - TODO coeTR - 2"
            let App fc tm argv = fst res
-                | _ => assert_total $ idris_crash "checkAppWith' - err1"
+                | _ => assert_total $ idris_crash "checkAppWith' - err1-2: \{show $ fst res}"
            tm' <- coeTrM "checkAppWith' - 2" cres tm
            pure (App fc tm' argv, snd res)
   -- Only non-user implicit `as` bindings are allowed to be present as arguments at this stage

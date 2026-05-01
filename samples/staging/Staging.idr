@@ -43,9 +43,9 @@ pow2_ = One
 pow3_ : IO ()
 pow3_ = do
   print "hello"
-  let x = One
+  let x := One      -- ?? what is :=
       y : Int_
-      y = Mul x ?m
+      y := Mul x ?m -- ?? what is :=
   pure ()
 --%logging "staging" 0
 
@@ -57,6 +57,7 @@ half (S (S n)) with (half n)
   _ | _ = Nothing
 half _ = Nothing
 
+--sqr : Arr Int Int := c . Mul c c
 sqr : Arr Int_ Int_
 sqr = \c => Mul c c
 
@@ -68,11 +69,13 @@ pow_ n c with (half n)
   pow_ (S n) c | _        = Mul c (pow_ n c)
   pow_ _ _     | _        = assert_total $ idris_crash "pow_"
 
+--main : _ := PLam (c. pow (Succ (Succ (Succ (Succ (Succ Zero))))) c)
 main_ : Arr Int_ Int_
 main_ = \c => pow_ 5 c
 
 -- example2
 
+--sqr2 : Int_ -> Int_
 sqr2 : Arr Int_ Int_
 sqr2 = \c => Mul c c
 
