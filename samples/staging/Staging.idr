@@ -85,3 +85,6 @@ sqr3 = sqr2 One
 
 sqr4 : Int_
 sqr4 = PApp sqr2 One
+
+main : Int_
+main = sqr4

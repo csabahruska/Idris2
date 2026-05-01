@@ -747,7 +747,7 @@ prepareExp :
     {auto o : Ref ROpts REPLOpts} ->
     PTerm -> Core ClosedTerm
 prepareExp ctm
-    = do ttimp <- desugar AnyExpr [] (PApp replFC (PRef replFC (UN $ Basic "unsafePerformIO")) ctm)
+    = do ttimp <- desugar AnyExpr [] ctm -- (PApp replFC (PRef replFC (UN $ Basic "unsafePerformIO")) ctm)
          let ttimpWithIt = ILocal replFC !getItDecls ttimp
          inidx <- resolveName (UN $ Basic "[input]")
          (tm, ty) <- elabTerm inidx InExpr [] (MkNested [])
