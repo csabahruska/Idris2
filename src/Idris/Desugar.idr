@@ -96,7 +96,8 @@ extendSyn newsyn
                     modDocstrings $= mergeLeft (modDocstrings newsyn),
                     modDocexports $= mergeLeft (modDocexports newsyn),
                     defDocstrings $= merge (defDocstrings newsyn),
-                    bracketholes $= sortedNub . ((bracketholes newsyn) ++) }
+                    bracketholes $= sortedNub . ((bracketholes newsyn) ++),
+                    stagedLetNames $= (++) newsyn.stagedLetNames}
                   syn)
   where
     removePrivate : ANameMap FixityInfo -> ANameMap FixityInfo
@@ -370,6 +371,7 @@ mutual
   desugarB side ps (PLet fc rig (PRef prefFC n) nTy nVal scope [])
       = do whenJust (isConcreteFC prefFC) $ \nfc =>
              addSemanticDecorations [(nfc, Bound, Just n)]
+           coreLift $ putStrLn "PLet - ILet n: \{show n}"
            pure $ ILet fc prefFC rig n !(desugarB side ps nTy) !(desugarB side ps nVal)
                                        !(desugar side (n :: ps) scope)
   desugarB side ps (PLet fc rig pat nTy nVal scope alts)

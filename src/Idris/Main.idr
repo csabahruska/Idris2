@@ -1,5 +1,7 @@
 module Idris.Main
 
+import Data.SortedSet
+
 import Idris.Driver
 import Compiler.Common
 
@@ -14,11 +16,12 @@ compile :
   Ref Syn SyntaxInfo ->
   (tmpDir : String) -> (outputDir : String) ->
   ClosedTerm -> (outfile : String) -> Core (Maybe String)
-compile defs1 syn tmp outputDir term outfile = do
+compile defs1 syn1 tmp outputDir term outfile = do
   let out = outputDir </> outfile
 
   defs <- get Ctxt
-  t <- nf defs [] term
+  syn <- get Syn
+  t <- nfOpts ({staging := True, stagedLets := fromList syn.stagedLetNames} defaultOpts) defs [] term
   q <- quote defs [] t
   t <- toFullNames q
   let res = "\{show t}"
@@ -27,6 +30,18 @@ compile defs1 syn tmp outputDir term outfile = do
   pure (Just out)
 
 {-
+export
+nf : {auto c : Ref Ctxt Defs} ->
+     {vars : _} ->
+     Defs -> Env Term vars -> Term vars -> Core (NF vars)
+nf defs env tm = eval defs defaultOpts env LocalEnv.empty tm []
+
+export
+nfOpts : {auto c : Ref Ctxt Defs} ->
+         {vars : _} ->
+         EvalOpts -> Defs -> Env Term vars -> Term vars -> Core (NF vars)
+nfOpts opts defs env tm = eval defs opts env LocalEnv.empty tm []
+
       defs <- get Ctxt
       logC "staging" 20 $ pure "PApp - tmx: \{show !(toFullNames !(quote defs env tmx))}"
       logC "staging" 20 $ pure "PApp - tmy: \{show !(toFullNames !(quote defs env tmy))}"
@@ -62,7 +77,14 @@ execute :
   (execDir : String) -> ClosedTerm -> Core ()
 execute defs1 syn dir term = do
   defs <- get Ctxt
-  t <- nf defs [] term
+  syn <- get Syn
+  --sl <- traverse toResolvedNames syn.stagedLetNames
+  coreLift $ putStrLn "syn.stagedLetNames: \{show syn.stagedLetNames}"
+  --coreLift $ putStrLn "syn.stagedLetNames: \{show sl}"
+  term' <- toFullNames term
+  coreLift $ putStrLn "\{show term}"
+  coreLift $ putStrLn "\{show term'}"
+  t <- nfOpts ({staging := True, stagedLets := fromList syn.stagedLetNames} defaultOpts) defs [] term'
   q <- quote defs [] t
   t <- toFullNames q
   coreLift $ putStrLn "\{show t}"

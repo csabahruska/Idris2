@@ -48,7 +48,7 @@ decoratedKeyword fname kwd = decorate fname Keyword (keyword kwd)
 
 decorateKeywords : {a : Type} -> OriginDesc -> List (WithBounds a) -> EmptyRule ()
 decorateKeywords fname xs
-  = act $ MkState (cast (map (decorationFromBounded fname Keyword) xs)) []
+  = act $ MkState (cast (map (decorationFromBounded fname Keyword) xs)) [] []
 
 decoratedPragma : OriginDesc -> String -> Rule ()
 decoratedPragma fname prg = decorate fname Keyword (pragma prg)
@@ -826,7 +826,10 @@ mutual
                    (rig, pat) <- pure s.val
                    ty <- option (PImplicit (virtualiseFC $ boundToFC fname s))
                                 (decoratedSymbol fname ":" *> typeExpr (pnoeq pdef) fname indents)
-                   (decoratedSymbol fname "=" <|> decoratedSymbol fname ":=")
+                   staged <- ((decoratedSymbol fname "=" >> pure False) <|> (decoratedSymbol fname ":=" >> pure False) <|> (decoratedSymbol fname "::=" >> pure True))
+                   when staged $ case pat of
+                    PRef _ n => actS n
+                    _ => pure ()
                    val <- typeExpr pnowith fname indents
                    alts <- block (patAlt fname)
                    pure (MkLetBinder rig pat ty val alts)
@@ -1244,7 +1247,10 @@ mutual
              IndentInfo -> (lhs : (PTerm, List (FC, PTerm))) -> Rule PClause
   parseRHS withArgs fname start col indents lhs
        = do b <- bounds $ do
-                   decoratedSymbol fname "="
+                   staged <- ((decoratedSymbol fname "=" >> pure False) <|> (decoratedSymbol fname "::=" >> pure True))
+                   when staged $ case lhs of
+                    (PRef _ n, _) => actS n
+                    _ => pure ()
                    mustWork $ do
                      continue indents
                      rhs <- typeExpr pdef fname indents

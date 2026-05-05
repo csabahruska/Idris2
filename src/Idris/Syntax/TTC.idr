@@ -109,6 +109,7 @@ TTC SyntaxInfo where
            toBuf (bracketholes syn)
            toBuf (startExpr syn)
            toBuf (holeNames syn)
+           toBuf (stagedLetNames syn)
 
   fromBuf
       = do fix <- fromBuf
@@ -119,6 +120,7 @@ TTC SyntaxInfo where
            bhs <- fromBuf
            start <- fromBuf
            hnames <- fromBuf
+           lnames <- fromBuf
            pure $ MkSyntax (fromList fix)
                    [] (fromList moddstr) (fromList modexpts)
                    [] (fromList ifs)
@@ -126,3 +128,4 @@ TTC SyntaxInfo where
                    bhs
                    [] start
                    hnames
+                   lnames

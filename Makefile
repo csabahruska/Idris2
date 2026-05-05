@@ -14,7 +14,7 @@ IDRIS2_CG ?= chez
 
 MAJOR=0
 MINOR=8
-PATCH=0
+PATCH=1
 
 GIT_SHA1=
 ifeq ($(shell git status >/dev/null 2>&1; echo $$?), 0)
@@ -106,7 +106,8 @@ papers: contrib linear
 	${MAKE} -C libs/papers IDRIS2=${TARGET} IDRIS2_INC_CGS=${IDRIS2_CG} IDRIS2_PATH=${IDRIS2_BOOT_PATH}
 
 bootstrap-libs : prelude base linear network
-libs : prelude base contrib network test-lib linear papers
+libs : prelude base contrib network test-lib linear
+#libs : prelude base contrib network test-lib linear papers
 
 libdocs:
 	${MAKE} -C libs/prelude docs IDRIS2=${TARGET} IDRIS2_PATH=${IDRIS2_BOOT_PATH}

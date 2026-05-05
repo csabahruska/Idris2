@@ -9,6 +9,7 @@ import Core.Primitives
 import Core.TT
 import Core.Value
 
+import Data.SortedSet
 import Data.List
 import Data.List.Quantifiers
 import Data.SnocList
@@ -96,6 +97,11 @@ record TermWithEnv (free : Scope) where
 
 parameters (defs : Defs) (topopts : EvalOpts)
   mutual
+    isStaging : {auto c : Ref Ctxt Defs} -> Name -> Core Bool
+    isStaging n = do
+      x <- toFullNames n
+      pure (staging topopts && contains (nameRoot x) topopts.stagedLets)
+
     eval : {auto c : Ref Ctxt Defs} ->
            {free, vars : _} ->
            Env Term free -> LocalEnv free vars ->
@@ -103,7 +109,14 @@ parameters (defs : Defs) (topopts : EvalOpts)
     eval env locs (Local fc mrig idx prf) stk
         = evalLocal env fc mrig idx prf stk locs
     eval env locs (Ref fc nt fn) stk
-        = evalRef env False fc nt fn stk (NApp fc (NRef nt fn) stk)
+        = do
+            res <- evalRef env False fc nt fn stk (NApp fc (NRef nt fn) stk)
+            {-
+              TODO:
+                - check if name should be let inserted
+                  + if so, store the result, which will be quoted back by the backend
+            -}
+            pure res
     eval {vars} {free} env locs (Meta fc name idx args) stk
         = evalMeta env fc name idx (closeArgs args) stk
       where
@@ -116,7 +129,7 @@ parameters (defs : Defs) (topopts : EvalOpts)
     eval env locs (Bind fc x (Lam _ r _ ty) scope) (thunk :: stk)
         = eval env (snd thunk :: locs) scope stk
     eval env locs (Bind fc x b@(Let _ r val ty) scope) stk
-        = if (holesOnly topopts || argHolesOnly topopts) && not (tcInline topopts)
+        = if (holesOnly topopts || argHolesOnly topopts || !(isStaging x)) && not (tcInline topopts)
              then do let b' = map (MkClosure topopts locs env) b
                      pure $ NBind fc x b'
                         (\defs', arg => evalWithOpts defs' topopts
@@ -166,7 +179,7 @@ parameters (defs : Defs) (topopts : EvalOpts)
         = do arg' <- sc defs $ snd arg
              applyToStack env arg' stk
     applyToStack env (NBind fc x b@(Let _ r val ty) sc) stk
-        = if (holesOnly topopts || argHolesOnly topopts) && not (tcInline topopts)
+        = if (holesOnly topopts || argHolesOnly topopts || !(isStaging x)) && not (tcInline topopts)
              then pure (NBind fc x b
                               (\defs', arg => applyToStack env !(sc defs' arg) stk))
              else applyToStack env !(sc defs val) stk
@@ -299,7 +312,11 @@ parameters (defs : Defs) (topopts : EvalOpts)
                                          (collapseDefault $ visibility res)
              -- want to shortcut that second check, if we're evaluating
              -- everything, so don't let bind unless we need that log!
-             let redok = redok1 || redok2
+             {-
+              TODO: check if we are doing staging, and the name is let inserted, if so then prevent reduction
+             -}
+             isLetInsertion <- isStaging n
+             let redok = (redok1 || redok2) && (not isLetInsertion)
              checkTimer -- If we're going to time out anywhere, it'll be
                         -- when evaluating something recursive, so this is a
                         -- good place to check

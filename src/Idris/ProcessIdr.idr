@@ -348,7 +348,7 @@ processMod sourceFileName ttcFileName msg sourcecode origin
                    pure Nothing
            else -- needs rebuilding
              do iputStrLn msg
-                Right (ws, MkState decor hnames, mod) <-
+                Right (ws, MkState decor hnames lnames, mod) <-
                     logTime 2 ("Parsing " ++ sourceFileName) $
                       pure $ runParser (PhysicalIdrSrc origin)
                                        (isLitFile sourceFileName)
@@ -369,7 +369,7 @@ processMod sourceFileName ttcFileName msg sourcecode origin
                   (filter reexport $ imports moduleHeader)
 
                 addSemanticDecorations decor
-                update Syn { holeNames := hnames }
+                update Syn { holeNames := hnames, stagedLetNames := map nameRoot lnames }
 
                 initHash
                 traverse_ addPublicHash (sort importMetas)

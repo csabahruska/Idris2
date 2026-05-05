@@ -26,6 +26,7 @@ record ParserState (container : Type -> Type) where
   constructor MkState
   decorations : container ASemanticDecoration
   holeNames : List String
+  stagedLetNames : List Name
 
 ||| This state needs to provide efficient concatenation.
 public export
@@ -40,19 +41,19 @@ State = ParserState List
 
 export
 toState : ParsingState -> State
-toState (MkState decs hs) = MkState (cast decs) hs
+toState (MkState decs hs ls) = MkState (cast decs) hs ls
 
 -- To help prevent concatenation slow downs, we only
 -- provide Semigroup and Monoid for the efficient
 -- version of the ParserState.
 export
 Semigroup ParsingState where
-  MkState decs1 hs1 <+> MkState decs2 hs2
-    = MkState (decs1 <+> decs2) (hs1 ++ hs2)
+  MkState decs1 hs1 ls1 <+> MkState decs2 hs2 ls2
+    = MkState (decs1 <+> decs2) (hs1 ++ hs2) (ls1 ++ ls2)
 
 export
 Monoid ParsingState where
-  neutral = MkState [<] []
+  neutral = MkState [<] [] []
 
 public export
 BRule : Bool -> Type -> Type
@@ -68,11 +69,15 @@ EmptyRule = BRule False
 
 export
 actD : ASemanticDecoration -> EmptyRule ()
-actD s = act (MkState [<s] [])
+actD s = act (MkState [<s] [] [])
 
 export
 actH : String -> EmptyRule ()
-actH s = act (MkState [<] [s])
+actH s = act (MkState [<] [s] [])
+
+export
+actS : Name -> EmptyRule ()
+actS s = act (MkState [<] [] [s])
 
 export
 debugInfo : Rule DebugInfo

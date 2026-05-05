@@ -1041,6 +1041,7 @@ record SyntaxInfo where
   usingImpl : List (Maybe Name, RawImp)
   startExpr : RawImp
   holeNames : List String -- hole names in the file
+  stagedLetNames : List String -- staging let insertion names
 
 export
 prefixes : SyntaxInfo -> ANameMap (FC, Nat)
@@ -1108,6 +1109,7 @@ initSyntax
                []
                []
                (IVar EmptyFC (UN $ Basic "main"))
+               []
                []
 
   where

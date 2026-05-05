@@ -6,6 +6,7 @@ import Core.Env
 import Core.TT
 
 import Data.List.Quantifiers
+import Data.SortedSet
 
 %default covering
 
@@ -24,6 +25,8 @@ record EvalOpts where
   reduceLimit : List (Name, Nat) -- reduction limits for given names. If not
                      -- present, no limit
   strategy : EvalOrder
+  staging : Bool
+  stagedLets : SortedSet String
 
 export
 defaultOpts : EvalOpts
@@ -36,6 +39,8 @@ defaultOpts = MkEvalOpts
     , fuel = Nothing
     , reduceLimit = []
     , strategy = CBN
+    , staging = False
+    , stagedLets = empty
     }
 
 export
@@ -49,6 +54,8 @@ withHoles = MkEvalOpts
     , fuel = Nothing
     , reduceLimit = []
     , strategy = CBN
+    , staging = False
+    , stagedLets = empty
     }
 
 export
@@ -62,6 +69,8 @@ withAll = MkEvalOpts
     , fuel = Nothing
     , reduceLimit = []
     , strategy = CBN
+    , staging = False
+    , stagedLets = empty
     }
 
 export
@@ -75,6 +84,8 @@ withArgHoles = MkEvalOpts
     , fuel = Nothing
     , reduceLimit = []
     , strategy = CBN
+    , staging = False
+    , stagedLets = empty
     }
 
 export

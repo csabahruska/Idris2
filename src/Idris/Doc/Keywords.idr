@@ -767,6 +767,7 @@ symbolsDoc
              """
   :: "=" ::= "Definition or equality type"
   :: ":=" ::= "Let binding or record assignment"
+  :: "::=" ::= "Staged definition or staged let binding"
   :: "$=" ::= recordUpdate
   :: "|" ::= "Additional patterns showing up in a `with` clause"
   :: "|||" ::= "Document string attached to the following definition"

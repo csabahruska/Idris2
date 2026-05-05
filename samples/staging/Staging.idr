@@ -58,8 +58,11 @@ half (S (S n)) with (half n)
 half _ = Nothing
 
 --sqr : Arr Int Int := c . Mul c c
+sqr0 : Arr Int_ Int_
+sqr0 = \c => Mul c c
+
 sqr : Arr Int_ Int_
-sqr = \c => Mul c c
+sqr ::= sqr0
 
 pow_ : Nat -> Int_ -> Int_
 pow_ Z     _ = One
@@ -73,21 +76,27 @@ pow_ n c with (half n)
 main_ : Arr Int_ Int_
 main_ = \c => pow_ 5 c
 
+main2_ : Arr Int_ Int_
+main2_ ::= main_
+
 -- example2
 
 --sqr2 : Int_ -> Int_
 sqr2 : Arr Int_ Int_
-sqr2 = \c => Mul c c
+sqr2 ::= \c => Mul c c
 
 %logging "staging" 1000
 %logging "elab.with" 1000
 sqr3 : Int_
-sqr3 = sqr2 One
+sqr3 = let x ::= sqr2 One in x
 %logging "elab.with" 0
 %logging "staging" 0
 
 sqr4 : Int_
-sqr4 = PApp sqr2 One
+sqr4 ::= PApp sqr2 One
 
 main : Int_
-main = sqr4
+main ::= sqr4
+
+main2 : Arr Int_ Int_
+main2 = sqr2
