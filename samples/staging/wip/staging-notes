@@ -1,0 +1,32 @@
+reproduce mikrocsip staging in idris2
+
+MVP:
+  recreate the power example
+
+TODO:
+  done - port power code to idris
+  done - model polarized lambda calculus in idris2
+  done - extend the coercion function
+  - let insertion
+
+let insertion design:
+  - relevant data structures
+    + MkLetBinder
+    + PLet
+    + ILet
+    + Bind / Let
+
+see:
+  /home/csaba/haskell/csip-bugs/staged-interpreter-feb/arith-apr-7.csip
+  ~/haskell/csip-bugs/2025-feb-10/csip/csip/staging
+
+IDEA:
+  represent data as sum of products
+
+TODO:
+  - create data: pair, either
+  - match on data: pair, either
+
+  - extend idris to create and match on data
+
+Q: can elaboration reflection do the ir transformation to object code ir with the assistance of coercive subtyping?
